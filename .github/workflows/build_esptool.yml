@@ -38,7 +38,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: main_work
+          ref: platformio
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -112,7 +112,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: main_work
+          ref: platformio
       - name: Download artifacts
         uses: jason2866/download-artifact@v3.0.4
         with:
@@ -135,7 +135,7 @@ jobs:
         - name: Checkout repository
           uses: actions/checkout@v4
           with:
-            ref: main_work
+            ref: platformio
         - name: Zip esptool.py
           run: |
             echo "Packaging new esptool release: ${{ github.ref_name }}"
