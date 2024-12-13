@@ -97,13 +97,21 @@ def detect_chip(
     if detect_port.serial_port.startswith("rfc2217:"):
         detect_port.USES_RFC2217 = True
     detect_port.connect(connect_mode, connect_attempts, detecting=True)
+
+    def check_if_stub(instance):
+        print(f" {instance.CHIP_NAME}")
+        if detect_port.sync_stub_detected:
+            instance = instance.STUB_CLASS(instance)
+            instance.sync_stub_detected = True
+        return instance
+
     try:
         print("Detecting chip type...", end="")
         chip_id = detect_port.get_chip_id()
-        for cls in [
-            n for n in ROM_LIST if n.CHIP_NAME not in ("ESP8266", "ESP32", "ESP32-S2")
-        ]:
+        for cls in ROM_LIST:
             # cmd not supported on ESP8266 and ESP32 + ESP32-S2 doesn't return chip_id
+            if cls.USES_MAGIC_VALUE:
+                continue
             if chip_id == cls.IMAGE_CHIP_ID:
                 inst = cls(detect_port._port, baud, trace_enabled=trace_enabled)
                 try:
@@ -112,6 +120,7 @@ def detect_chip(
                     )  # Dummy read to check Secure Download mode
                 except UnsupportedCommandError:
                     inst.secure_download_mode = True
+                inst = check_if_stub(inst)
                 inst._post_connect()
                 break
         else:
@@ -135,10 +144,12 @@ def detect_chip(
             )
 
             for cls in ROM_LIST:
-                if chip_magic_value in cls.CHIP_DETECT_MAGIC_VALUE:
+                if not cls.USES_MAGIC_VALUE:
+                    continue
+                if chip_magic_value == cls.MAGIC_VALUE:
                     inst = cls(detect_port._port, baud, trace_enabled=trace_enabled)
+                    inst = check_if_stub(inst)
                     inst._post_connect()
-                    inst.check_chip_id()
                     break
             else:
                 err_msg = f"Unexpected chip magic value {chip_magic_value:#010x}."
@@ -148,14 +159,9 @@ def detect_chip(
                 "Probably this means Secure Download Mode is enabled, "
                 "autodetection will not work. Need to manually specify the chip."
             )
-    finally:
-        if inst is not None:
-            print(" %s" % inst.CHIP_NAME, end="")
-            if detect_port.sync_stub_detected:
-                inst = inst.STUB_CLASS(inst)
-                inst.sync_stub_detected = True
-            print("")  # end line
-            return inst
+    if inst is not None:
+        return inst
+
     raise FatalError(
         f"{err_msg} Failed to autodetect chip type."
         "\nProbably it is unsupported by this version of esptool."
@@ -719,7 +725,7 @@ def write_flash(esp, args):
                     print("Flash md5: %s" % res)
                     print(
                         "MD5 of 0xFF is %s"
-                        % (hashlib.md5(b"\xff" * uncsize).hexdigest())
+                        % (hashlib.md5(b"\xFF" * uncsize).hexdigest())
                     )
                     raise FatalError("MD5 of file does not match data in flash!")
                 else:
@@ -870,7 +876,8 @@ def image_info(args):
         for idx, seg in enumerate(image.segments):
             segs = seg.get_memory_type(image)
             seg_name = ", ".join(segs)
-            if "DROM" in segs:  # The DROM segment starts with the esp_app_desc_t struct
+            # The DROM segment starts with the esp_app_desc_t struct
+            if "DROM" in segs and app_desc is None:
                 app_desc = seg.data[:256]
             elif "DRAM" in segs:
                 # The DRAM segment starts with the esp_bootloader_desc_t struct
@@ -909,7 +916,7 @@ def image_info(args):
             pass  # ESP8266 image has no append_digest field
 
         if app_desc:
-            APP_DESC_STRUCT_FMT = "<II" + "8s" + "32s32s16s16s32s32s" + "80s"
+            APP_DESC_STRUCT_FMT = "<II" + "8s" + "32s32s16s16s32s32sHHB" + "3s" + "72s"
             (
                 magic_word,
                 secure_version,
@@ -920,6 +927,10 @@ def image_info(args):
                 date,
                 idf_ver,
                 app_elf_sha256,
+                min_efuse_blk_rev_full,
+                max_efuse_blk_rev_full,
+                mmu_page_size,
+                reserv3,
                 reserv2,
             ) = struct.unpack(APP_DESC_STRUCT_FMT, app_desc)
 
@@ -933,6 +944,13 @@ def image_info(args):
                 print(f'Compile time: {date.decode("utf-8")} {time.decode("utf-8")}')
                 print(f"ELF file SHA256: {hexify(app_elf_sha256, uppercase=False)}")
                 print(f'ESP-IDF: {idf_ver.decode("utf-8")}')
+                print(
+                    f"Minimal eFuse block revision: {min_efuse_blk_rev_full // 100}.{min_efuse_blk_rev_full % 100}"
+                )
+                print(
+                    f"Maximal eFuse block revision: {max_efuse_blk_rev_full // 100}.{max_efuse_blk_rev_full % 100}"
+                )
+                print(f"MMU page size: {2 ** mmu_page_size // 1024} KB")
                 print(f"Secure version: {secure_version}")
 
         elif bootloader_desc:
@@ -1151,12 +1169,27 @@ def erase_flash(esp, args):
                 "please use with caution, otherwise it may brick your device!"
             )
     print("Erasing flash (this may take a while)...")
+    if esp.CHIP_NAME != "ESP8266" and not esp.IS_STUB:
+        print(
+            "Note: You can use the erase_region command in ROM bootloader "
+            "mode to erase a specific region."
+        )
     t = time.time()
     esp.erase_flash()
-    print("Chip erase completed successfully in %.1fs" % (time.time() - t))
+    print(f"Chip erase completed successfully in {time.time() - t:.1f} seconds.")
 
 
 def erase_region(esp, args):
+    if args.address % ESPLoader.FLASH_SECTOR_SIZE != 0:
+        raise FatalError(
+            "Offset to erase from must be a multiple "
+            f"of {ESPLoader.FLASH_SECTOR_SIZE}"
+        )
+    if args.size % ESPLoader.FLASH_SECTOR_SIZE != 0:
+        raise FatalError(
+            "Size of data to erase must be a multiple "
+            f"of {ESPLoader.FLASH_SECTOR_SIZE}"
+        )
     if not args.force and esp.CHIP_NAME != "ESP8266" and not esp.secure_download_mode:
         if esp.get_flash_encryption_enabled() or esp.get_secure_boot_enabled():
             raise FatalError(
@@ -1167,8 +1200,12 @@ def erase_region(esp, args):
             )
     print("Erasing region (may be slow depending on size)...")
     t = time.time()
-    esp.erase_region(args.address, args.size)
-    print("Erase completed successfully in %.1f seconds." % (time.time() - t))
+    if esp.CHIP_NAME != "ESP8266" and not esp.IS_STUB:
+        # flash_begin triggers a flash erase, enabling erasing in ROM and SDM
+        esp.flash_begin(args.size, args.address, logging=False)
+    else:
+        esp.erase_region(args.address, args.size)
+    print(f"Erase completed successfully in {time.time() - t:.1f} seconds.")
 
 
 def run(esp, args):
@@ -1433,7 +1470,7 @@ def merge_bin(args):
 
             def pad_to(flash_offs):
                 # account for output file offset if there is any
-                of.write(b"\xff" * (flash_offs - args.target_offset - of.tell()))
+                of.write(b"\xFF" * (flash_offs - args.target_offset - of.tell()))
 
             for addr, argfile in input_files:
                 pad_to(addr)
