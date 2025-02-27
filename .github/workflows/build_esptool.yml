@@ -27,7 +27,7 @@ jobs:
         name: Build and test in ${{ matrix.platform }}
         with:
           arch: ${{ matrix.platform }}
-          distro: ubuntu20.04
+          distro: ubuntu22.04
           shell: /bin/bash
           # Not required, but speeds up builds by storing container images in
           # a GitHub package registry.
@@ -45,8 +45,7 @@ jobs:
             export PATH=\$PATH:/home/builder/.local/bin
             # Install dependencies
             python -m pip install --upgrade pip
-            # PyInstaller >=6.0 results in significantly more antivirus false positives
-            pip install pyinstaller==5.13.2
+            pip install pyinstaller==6.11.1
             pip install --user -e .
 
             # Build with PyInstaller
@@ -90,7 +89,7 @@ jobs:
         - platform: linux-amd64
           TARGET: linux-amd64
           SEPARATOR: ':'
-          RUN_ON: ubuntu-20.04
+          RUN_ON: ubuntu-24.04
     env:
       DISTPATH: esptool-${{ matrix.TARGET }}
       STUBS_DIR: ./esptool/targets/stub_flasher/

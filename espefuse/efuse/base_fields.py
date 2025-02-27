@@ -12,7 +12,6 @@ from bitstring import BitArray, BitStream, CreationError
 import esptool
 
 from . import util
-from typing import List
 
 
 class CheckArgValue(object):
@@ -392,12 +391,14 @@ class EfuseBlockBase(EfuseProtectBase):
                     # if the required bits are not set then we need to re-burn it again.
                     if burns < 2:
                         print(
-                            f"\nRepeat burning BLOCK{self.id} (#{burns + 2}) because not all bits were set"
+                            f"\nRepeat burning BLOCK{self.id} (#{burns + 2}) "
+                            "because not all bits were set"
                         )
                         continue
                     else:
                         print(
-                            f"\nAfter {burns + 1} attempts, the required data was not set to BLOCK{self.id}"
+                            f"\nAfter {burns + 1} attempts, the required data was not "
+                            f"set to BLOCK{self.id}"
                         )
                 break
 
@@ -455,8 +456,8 @@ class EspEfusesBase(object):
     """
 
     _esp = None
-    blocks: List[EfuseBlockBase] = []
-    efuses: List = []
+    blocks: list[EfuseBlockBase] = []
+    efuses: list = []
     coding_scheme = None
     force_write_always = None
     batch_mode_cnt = 0
@@ -628,9 +629,9 @@ class EspEfusesBase(object):
             % (action, "" if action.endswith("\n") else ". ")
         )
         if not do_not_confirm:
-            print("Type 'BURN' (all capitals) to continue.")
-            # required for Pythons which disable line buffering, ie mingw in mintty
-            sys.stdout.flush()
+            print("Type 'BURN' (all capitals) to continue.", flush=True)
+            # Flush required for Pythons which disable line buffering,
+            # ie mingw in mintty
             yes = input()
             if yes != "BURN":
                 print("Aborting.")
@@ -650,7 +651,8 @@ class EspEfusesBase(object):
         return self.blocks[block_num].num_errors, self.blocks[block_num].fail
 
     def is_efuses_incompatible_for_burn(self):
-        # Overwrite this function for a specific target if you want to check if a certain eFuse(s) can be burned.
+        # Overwrite this function for a specific target if you want to check if a
+        # certain eFuse(s) can be burned.
         return False
 
     def get_major_chip_version(self):
