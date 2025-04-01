@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import os
+from typing import List
 
 import yaml
 
@@ -115,7 +116,7 @@ class EfuseDefineFields(EfuseFieldsBase):
         self.EFUSES = []
         self.KEYBLOCKS = []
         self.BLOCK2_CALIBRATION_EFUSES = []
-        self.CALC: list = []
+        self.CALC: List = []
 
         dir_name = os.path.dirname(os.path.abspath(__file__))
         dir_name, file_name = os.path.split(dir_name)

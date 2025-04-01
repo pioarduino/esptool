@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+from typing import Dict
+
 from .esp32c6 import ESP32C6ROM
 from ..loader import ESPLoader, StubMixin
 from ..logger import log
@@ -35,7 +37,8 @@ class ESP32H2ROM(ESP32C6ROM):
 
     UF2_FAMILY_ID = 0x332726F6
 
-    KEY_PURPOSES: dict[int, str] = {
+    EFUSE_MAX_KEY = 5
+    KEY_PURPOSES: Dict[int, str] = {
         0: "USER/EMPTY",
         1: "ECDSA_KEY",
         2: "XTS_AES_256_KEY_1",

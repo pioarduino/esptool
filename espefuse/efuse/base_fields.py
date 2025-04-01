@@ -12,6 +12,7 @@ from bitstring import BitArray, BitStream, CreationError
 import esptool
 
 from . import util
+from typing import List
 
 
 class CheckArgValue(object):
@@ -456,8 +457,8 @@ class EspEfusesBase(object):
     """
 
     _esp = None
-    blocks: list[EfuseBlockBase] = []
-    efuses: list = []
+    blocks: List[EfuseBlockBase] = []
+    efuses: List = []
     coding_scheme = None
     force_write_always = None
     batch_mode_cnt = 0
