@@ -77,7 +77,7 @@
     version = {attr = "esptool.__init__.__version__"}
 
 [tool.commitizen]
-    version = "4.8.1"
+    version = "5.0.0-dev"
     update_changelog_on_bump = true
     tag_format = "v$version"
     changelog_start_rev = "v4.2.1"
@@ -122,6 +122,9 @@
         ".git",
         "__pycache__"
     ]
+
+    # ignore release helper
+    extend-exclude = ["ci/pack_python.py", "ci/patch_release.py", "ci/gen_pio_manifest.py", "package.json"]
 
     line-length = 88
     target-version = "py310"
