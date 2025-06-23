@@ -233,11 +233,11 @@ class EsptoolLogger(TemplateLogger):
         """
         percent = f"{100 * (cur_iter / float(total_iters)):.1f}"
         filled_length = int(bar_length * cur_iter // total_iters)
-        bar = '█' * filled_length + '░' * (bar_length - filled_length)
-        
+        bar = "█" * filled_length + "░" * (bar_length - filled_length)
+
         end_char = (
-            "\n" 
-            if not self._smart_features or cur_iter == total_iters 
+            "\n"
+            if not self._smart_features or cur_iter == total_iters
             else f"{self.ansi_line_up_pos1}"
         )
         self.print(
