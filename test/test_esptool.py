@@ -76,7 +76,7 @@ TEST_DIR = os.path.abspath(os.path.dirname(__file__))
 print("Running esptool tests...")
 
 
-class ESPRFC2217Server(object):
+class ESPRFC2217Server:
     """Creates a virtual serial port accessible through rfc2217 port."""
 
     def __init__(self, rfc2217_port=None):
@@ -326,7 +326,7 @@ class EsptoolTestCase:
         # "Hello world" data without unwanted chip reset.
         with serial.serial_for_url(arg_port, arg_baud, rtscts=True) as p:
             p.timeout = 5
-            output = p.read(100)
+            output = p.read(200)
             print(f"Output: {output}")
             assert any(item in output for item in expected_out)
 
@@ -445,7 +445,8 @@ class TestFlashing(EsptoolTestCase):
     @pytest.mark.skipif(arg_chip != "esp32", reason="Don't need to test multiple times")
     def test_short_flash_deprecated(self):
         out = self.run_esptool(
-            "--before default_reset write_flash 0x0 images/one_kb.bin --flash_size keep"
+            "--before default_reset write_flash 0x0 images/one_kb.bin "
+            "--flash_size keep --flash_mode=keep"
         )
         assert (
             "Deprecated: Choice 'default_reset' for option '--before' is deprecated. "
@@ -454,6 +455,10 @@ class TestFlashing(EsptoolTestCase):
         assert (
             "Deprecated: Option '--flash_size' is deprecated. "
             "Use '--flash-size' instead." in out
+        )
+        assert (
+            "Deprecated: Option '--flash_mode' is deprecated. "
+            "Use '--flash-mode' instead." in out
         )
         assert (
             "Deprecated: Command 'write_flash' is deprecated. "
@@ -547,6 +552,37 @@ class TestFlashing(EsptoolTestCase):
         offset2 = offset & 0xFFFFFF
         self.run_esptool("write-flash {} images/one_kb_all_ef.bin".format(hex(offset2)))
         self.verify_readback(offset, 1 * 1024 * 1024, "images/one_mb.bin")
+
+    @pytest.mark.skipif(
+        int(os.getenv("ESPTOOL_TEST_FLASH_SIZE", "0")) < 32, reason="needs 32MB flash"
+    )
+    def test_verify_erase_between_32M_flash(self):
+        """
+        Test writing two 1KB binaries with random data after 16MB boundary and
+        verify hashes.
+        """
+        BASE_OFFSET = 16 * 1024 * 1024  # 16MB boundary
+        FILE_SIZE = 1 * 1024  # 1KB
+
+        binary1 = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
+        binary2 = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
+
+        try:
+            for _ in range(FILE_SIZE):
+                binary1.write(struct.pack("B", random.randrange(0, 256)))
+                binary2.write(struct.pack("B", random.randrange(0, 256)))
+            binary1.close()
+            binary2.close()
+
+            output1 = self.run_esptool(f"write-flash {BASE_OFFSET} {binary1.name}")
+            assert "Hash of data verified" in output1
+
+            output2 = self.run_esptool(f"write-flash {BASE_OFFSET} {binary2.name}")
+            assert "Hash of data verified" in output2
+
+        finally:
+            os.unlink(binary1.name)
+            os.unlink(binary2.name)
 
     def test_correct_offset(self):
         """Verify writing at an offset actually writes to that offset."""
@@ -1193,15 +1229,24 @@ class TestMemoryOperations(EsptoolTestCase):
         assert "to 'memout.bin'" in output
         os.remove("memout.bin")
 
-    def test_memory_write(self):
-        output = self.run_esptool("write-mem 0x400C0000 0xabad1dea 0x0000ffff")
+    @pytest.fixture
+    def test_address(self):
+        """
+        Return a RAM address suitable for memory read/write tests.
+        ESP32-P4 has different RAM ranges. Address 0x4FF90000 is just
+        inside the range and unused.
+        """
+        return 0x4FF90000 if arg_chip == "esp32p4" else 0x400C0000
+
+    def test_memory_write(self, test_address):
+        output = self.run_esptool(f"write-mem {test_address:#X} 0xabad1dea 0x0000ffff")
         assert "Wrote 0xabad1dea" in output
         assert "mask 0x0000ffff" in output
-        assert "to 0x400c0000" in output
+        assert f"to {test_address:#x}" in output
 
-    def test_memory_read(self):
-        output = self.run_esptool("read-mem 0x400C0000")
-        assert "0x400c0000 =" in output
+    def test_memory_read(self, test_address):
+        output = self.run_esptool(f"read-mem {test_address:#X}")
+        assert f"{test_address:#x} =" in output
 
 
 class TestKeepImageSettings(EsptoolTestCase):
@@ -1209,7 +1254,7 @@ class TestKeepImageSettings(EsptoolTestCase):
 
     @classmethod
     def setup_class(self):
-        super(TestKeepImageSettings, self).setup_class()
+        super().setup_class()
         self.BL_IMAGE = f"images/bootloader_{arg_chip}.bin"
         self.flash_offset = esptool.CHIP_DEFS[arg_chip].BOOTLOADER_FLASH_OFFSET
         with open(self.BL_IMAGE, "rb") as f:

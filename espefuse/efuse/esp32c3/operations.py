@@ -158,14 +158,13 @@ class ESP32C3Commands(BaseCommands):
             0 : len([name for name in keypurposes if name is not None]) :
         ]
 
-        util.check_duplicate_name_in_list(block_name_list)
-        if len(block_name_list) != len(datafile_list) or len(block_name_list) != len(
-            keypurpose_list
-        ):
-            raise esptool.FatalError(
-                f"The number of blocks ({len(block_name_list)}), datafile ({len(datafile_list)}) "
-                f"and keypurpose ({len(keypurpose_list)}) should be the same."
+        block_name_list, datafile_list, keypurpose_list = (
+            self._adjust_key_data_for_blocks(
+                block_name_list,
+                datafile_list,  # type: ignore
+                keypurpose_list,
             )
+        )
 
         log.print("Burn keys to blocks:")
         for block_name, datafile, keypurpose in zip(
@@ -294,8 +293,10 @@ class ESP32C3Commands(BaseCommands):
             digest = espsecure._digest_sbv2_public_key(datafile)
             if len(digest) != num_bytes:
                 raise esptool.FatalError(
-                    "Incorrect digest size %d. Digest must be %d bytes (%d bits) "
-                    "of raw binary key data." % (len(digest), num_bytes, num_bytes * 8)
+                    "Incorrect digest size {}. Digest must be {} bytes ({} bits) "
+                    "of raw binary key data.".format(
+                        len(digest), num_bytes, num_bytes * 8
+                    )
                 )
             digest_list.append(digest)
 

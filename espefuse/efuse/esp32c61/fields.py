@@ -29,7 +29,7 @@ class EfuseBlock(base_fields.EfuseBlockBase):
 
     def __init__(self, parent, param, skip_read=False):
         parent.read_coding_scheme()
-        super(EfuseBlock, self).__init__(parent, param, skip_read=skip_read)
+        super().__init__(parent, param, skip_read=skip_read)
 
     def apply_coding_scheme(self):
         data = self.get_raw(from_read=False)[::-1]
@@ -72,8 +72,7 @@ class EspEfuses(base_fields.EspEfusesBase):
         self.BLOCKS_FOR_KEYS = self.Blocks.get_blocks_for_keys()
         if esp.CHIP_NAME != "ESP32-C61":
             raise esptool.FatalError(
-                "Expected the 'esp' param for ESP32-C61 chip but got for '%s'."
-                % (esp.CHIP_NAME)
+                f"Expected the 'esp' param for ESP32-C61 chip but got for '{esp.CHIP_NAME}'."
             )
         if not skip_connect:
             flags = self._esp.get_security_info()["flags"]
@@ -310,7 +309,7 @@ class EfuseWafer(EfuseField):
         return (hi_bits << 3) + lo_bits
 
     def save(self, new_value):
-        raise esptool.FatalError("Burning %s is not supported" % self.name)
+        raise esptool.FatalError(f"Burning {self.name} is not supported")
 
 
 class EfuseTempSensor(EfuseField):
@@ -360,7 +359,7 @@ class EfuseMacField(EfuseField):
     def check(self):
         errs, fail = self.parent.get_block_errors(self.block)
         if errs != 0 or fail:
-            output = "Block%d has ERRORS:%d FAIL:%d" % (self.block, errs, fail)
+            output = f"Block{self.block} has ERRORS:{errs} FAIL:{fail}"
         else:
             output = "OK"
         return "(" + output + ")"
@@ -377,7 +376,7 @@ class EfuseMacField(EfuseField):
             mac = mac.bytes
         else:
             mac = self.get_raw(from_read)
-        return "%s %s" % (util.hexify(mac, ":"), self.check())
+        return " ".join([util.hexify(mac, ":"), self.check()])
 
     def save(self, new_value):
         def print_field(e, new_value):
@@ -388,7 +387,7 @@ class EfuseMacField(EfuseField):
         if self.name == "CUSTOM_MAC":
             bitarray_mac = self.convert_to_bitstring(new_value)
             print_field(self, bitarray_mac)
-            super(EfuseMacField, self).save(new_value)
+            super().save(new_value)
         else:
             # Writing the BLOCK1 (MAC_SPI_8M_0) default MAC is not possible,
             # as it's written in the factory.
@@ -400,8 +399,6 @@ class EfuseKeyPurposeField(EfuseField):
     KEY_PURPOSES = [
         ("USER",                         0,  None,       None,      "no_need_rd_protect"),   # User purposes (software-only use)
         ("ECDSA_KEY",                    1,  None,       "Reverse", "need_rd_protect"),      # ECDSA key
-        ("XTS_AES_256_KEY_1",            2,  None,       "Reverse", "need_rd_protect"),      # XTS_AES_256_KEY_1 (flash/PSRAM encryption)
-        ("XTS_AES_256_KEY_2",            3,  None,       "Reverse", "need_rd_protect"),      # XTS_AES_256_KEY_2 (flash/PSRAM encryption)
         ("XTS_AES_128_KEY",              4,  None,       "Reverse", "need_rd_protect"),      # XTS_AES_128_KEY (flash/PSRAM encryption)
         ("HMAC_DOWN_ALL",                5,  None,       None,      "need_rd_protect"),      # HMAC Downstream mode
         ("HMAC_DOWN_JTAG",               6,  None,       None,      "need_rd_protect"),      # JTAG soft enable key (uses HMAC Downstream mode)
@@ -410,7 +407,6 @@ class EfuseKeyPurposeField(EfuseField):
         ("SECURE_BOOT_DIGEST0",          9,  "DIGEST",   None,      "no_need_rd_protect"),   # SECURE_BOOT_DIGEST0 (Secure Boot key digest)
         ("SECURE_BOOT_DIGEST1",          10, "DIGEST",   None,      "no_need_rd_protect"),   # SECURE_BOOT_DIGEST1 (Secure Boot key digest)
         ("SECURE_BOOT_DIGEST2",          11, "DIGEST",   None,      "no_need_rd_protect"),   # SECURE_BOOT_DIGEST2 (Secure Boot key digest)
-        ("XTS_AES_256_KEY",              -1, "VIRTUAL",  None,      "no_need_rd_protect"),   # Virtual purpose splits to XTS_AES_256_KEY_1 and XTS_AES_256_KEY_2
     ]
 # fmt: on
     KEY_PURPOSES_NAME = [name[0] for name in KEY_PURPOSES]
@@ -454,7 +450,4 @@ class EfuseKeyPurposeField(EfuseField):
 
     def save(self, new_value):
         raw_val = int(self.check_format(str(new_value)))
-        str_new_value = self.get_name(raw_val)
-        if self.name == "KEY_PURPOSE_5" and str_new_value.startswith("XTS_AES"):
-            raise esptool.FatalError(f"{self.name} can not have {str_new_value} key due to a hardware bug (please see TRM for more details)")
-        return super(EfuseKeyPurposeField, self).save(raw_val)
+        return super().save(raw_val)

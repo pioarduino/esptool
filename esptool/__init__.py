@@ -31,7 +31,7 @@ __all__ = [
     "write_mem",
 ]
 
-__version__ = "5.0.2"
+__version__ = "5.1.0"
 
 import os
 import shlex
@@ -269,7 +269,7 @@ def add_spi_flash_options(
 def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
     # Check if we are writing/erasing/reading past 16MB boundary
     if (
-        not (esp.IS_STUB and esp.CHIP_NAME in ["ESP32-S3", "ESP32-P4"])
+        not (esp.IS_STUB and esp.CHIP_NAME in ["ESP32-S3", "ESP32-P4", "ESP32-C5"])
         and address + size > 0x1000000
     ):
         raise FatalError(
@@ -785,10 +785,10 @@ def image_info_cli(ctx, filename: list[tuple[int | None, t.IO[bytes]]]):
 )
 @click.option(
     "--pad-to-size",
-    type=int,
+    type=str,
     default=None,
     help="The block size to pad the final binary image to. "
-    "Value 0xFF is used for padding.",
+    "Value 0xFF is used for padding. Supports MB, KB suffixes.",
 )
 @click.option(
     "--ram-only-header",
@@ -1028,7 +1028,11 @@ def main(argv: list[str] | None = None, esp: ESPLoader | None = None):
     returned by get_default_connected_device()
     """
     args = expand_file_arguments(argv or sys.argv[1:])
-    cli(args=args, esp=esp)
+    try:
+        cli(args=args, esp=esp)
+    except SystemExit as e:
+        if e.code != 0:
+            raise
 
 
 def get_port_list(
@@ -1078,7 +1082,7 @@ def expand_file_arguments(argv: list[str]) -> list[str]:
     for arg in argv:
         if arg.startswith("@"):
             expanded = True
-            with open(arg[1:], "r") as f:
+            with open(arg[1:]) as f:
                 for line in f.readlines():
                     new_args += shlex.split(line)
         else:
@@ -1115,12 +1119,7 @@ def connect_loop(
                 log.print("")
             esp.connect(before)
             return esp
-        except (
-            FatalError,
-            serial.serialutil.SerialException,
-            IOError,
-            OSError,
-        ) as err:
+        except (FatalError, serial.serialutil.SerialException, OSError) as err:
             if esp and esp._port:
                 esp._port.close()
             esp = None

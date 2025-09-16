@@ -9,8 +9,10 @@ import io
 import os
 import json
 import sys
-from typing import Any, BinaryIO, Callable, TextIO
+from typing import Any, BinaryIO, TextIO
+from collections.abc import Callable
 
+import espsecure
 import rich_click as click
 
 from bitstring import BitStream
@@ -486,18 +488,107 @@ class BaseCommands:
 
         return None
 
-    def _split_512_bit_key(
+    def _adjust_key_data_for_blocks(
         self,
         block_names: list[str],
         datafiles: list[BinaryIO],
         keypurposes: list[str],
+    ) -> tuple[list[str], list[BinaryIO], list[str]]:
+        """Split a key that takes more than one efuse block into two blocks.
+        It handles all key purposes that require splitting into two blocks.
+
+        This method checks if key purposes require splitting into two blocks,
+        such as "XTS_AES_256_KEY", "XTS_AES_256_PSRAM_KEY", and "ECDSA_KEY_P384".
+
+        Args:
+            block_names: List of block names.
+            datafiles: List of BinaryIO objects containing key data.
+            keypurposes: List of key purposes.
+
+        Returns:
+            A tuple containing updated block names, datafiles, and keypurposes.
+        """
+        keypurposes = list(keypurposes)
+        datafiles = list(datafiles)
+        block_names = list(block_names)
+
+        if "XTS_AES_256_KEY" in keypurposes:
+            # XTS_AES_256_KEY is not an actual HW key purpose, needs to be split into
+            # XTS_AES_256_KEY_1 and XTS_AES_256_KEY_2
+            block_names, datafiles, keypurposes = self._split_multiblock_key(
+                block_names,
+                datafiles,  # type: ignore
+                keypurposes,
+                "XTS_AES_256_KEY",
+            )
+
+        if "XTS_AES_256_PSRAM_KEY" in keypurposes:
+            # XTS_AES_256_PSRAM_KEY -> XTS_AES_256_PSRAM_KEY_1 and ..._KEY_2
+            block_names, datafiles, keypurposes = self._split_multiblock_key(
+                block_names,
+                datafiles,  # type: ignore
+                keypurposes,
+                "XTS_AES_256_PSRAM_KEY",
+            )
+
+        # ECDSA keys can be present in a command multiple times
+        i = 0
+        while i < len(keypurposes):
+            if "ECDSA_KEY" in keypurposes[i]:
+                if keypurposes[i] not in ["ECDSA_KEY_P384_L", "ECDSA_KEY_P384_H"]:
+                    sk = espsecure.load_ecdsa_signing_key(datafiles[i])  # type: ignore
+                    data = espsecure.get_ecdsa_signing_key_raw_bytes(sk)
+                    if "ECDSA_KEY_P384" == keypurposes[i]:
+                        assert len(data) == 48, (
+                            "NIST384p private key should be 48 bytes long"
+                        )
+                        datafiles[i] = io.BytesIO(b"\x00" * 16 + data)
+                        # ECDSA_KEY_P384 -> ECDSA_KEY_P384_L and ECDSA_KEY_P384_H
+                        block_names, datafiles, keypurposes = (
+                            self._split_multiblock_key(
+                                block_names,
+                                datafiles,  # type: ignore
+                                keypurposes,
+                                "ECDSA_KEY_P384",
+                            )
+                        )
+                    else:
+                        # the private key is 24 bytes long for NIST192p,
+                        # and 8 bytes of padding
+                        datafiles[i] = (
+                            io.BytesIO(b"\x00" * 8 + data)
+                            if len(data) == 24
+                            else io.BytesIO(data)
+                        )
+
+            i += 1
+
+        # Check that all block names are unique
+        util.check_duplicate_name_in_list(block_names)
+
+        # Check that the number of blocks, datafiles, and keypurposes is equal
+        if len(block_names) != len(datafiles) or len(block_names) != len(keypurposes):
+            raise esptool.FatalError(
+                f"The number of blocks ({len(block_names)}), "
+                f"datafile ({len(datafiles)}) and keypurpose ({len(keypurposes)}) "
+                "should be the same."
+            )
+
+        return block_names, datafiles, keypurposes
+
+    def _split_multiblock_key(
+        self,
+        block_names: list[str],
+        datafiles: list[BinaryIO],
+        keypurposes: list[str],
+        base_keypurpose: str,
     ) -> tuple[list[str], list[BinaryIO], list[str]]:
         """Helper method to split 512-bit key into two 256-bit keys"""
         keypurpose_list = list(keypurposes)
         datafile_list = list(datafiles)
         block_name_list = list(block_names)
 
-        i = keypurpose_list.index("XTS_AES_256_KEY")
+        i = keypurpose_list.index(base_keypurpose)
         block_name = block_name_list[i]
 
         block_num = self.efuses.get_index_block_by_name(block_name)
@@ -506,25 +597,24 @@ class BaseCommands:
         data = datafile_list[i].read()
         if len(data) != 64:
             raise esptool.FatalError(
-                "Incorrect key file size %d, XTS_AES_256_KEY should be 64 bytes"
-                % len(data)
+                f"Incorrect key file size {len(data)}, {base_keypurpose} "
+                "should be 64 bytes"
             )
 
         key_block_2 = self._get_next_key_block(block, block_name_list)
         if not key_block_2:
-            raise esptool.FatalError("XTS_AES_256_KEY requires two free keyblocks")
+            raise esptool.FatalError(f"{base_keypurpose} requires two free keyblocks")
 
-        keypurpose_list.append("XTS_AES_256_KEY_1")
-        datafile_list.append(io.BytesIO(data[:32]))
-        block_name_list.append(block_name)
+        postfix = (
+            ["_1", "_2"] if base_keypurpose.startswith("XTS_AES_256") else ["_H", "_L"]
+        )
+        keypurpose_list[i] = f"{base_keypurpose}{postfix[0]}"
+        datafile_list[i] = io.BytesIO(data[:32])
+        block_name_list[i] = block_name
 
-        keypurpose_list.append("XTS_AES_256_KEY_2")
-        datafile_list.append(io.BytesIO(data[32:]))
-        block_name_list.append(key_block_2.name)
-
-        keypurpose_list.pop(i)
-        datafile_list.pop(i)
-        block_name_list.pop(i)
+        keypurpose_list.insert(i + 1, f"{base_keypurpose}{postfix[1]}")
+        datafile_list.insert(i + 1, io.BytesIO(data[32:]))
+        block_name_list.insert(i + 1, key_block_2.name)
 
         return block_name_list, datafile_list, keypurpose_list
 
@@ -761,9 +851,9 @@ class BaseCommands:
         for block in self.efuses.blocks:
             burn_list_a_block = [e for e in burn_efuses_list if e.block == block.id]
             if len(burn_list_a_block):
-                log.print("  from BLOCK%d" % (block.id))
+                log.print(f"  from BLOCK{block.id}")
                 for field in burn_list_a_block:
-                    log.print("     - %s" % (field.name))
+                    log.print(f"     - {field.name}")
                     if (
                         self.efuses.blocks[field.block].get_coding_scheme()
                         != self.efuses.REGS.CODING_SCHEME_NONE
@@ -901,7 +991,7 @@ class BaseCommands:
                     ]
                     if error:
                         raise esptool.FatalError(
-                            "%s must be readable, stop this operation!" % efuse_name
+                            f"{efuse_name} must be readable, stop this operation!"
                         )
                 else:
                     for block in self.efuses.Blocks.BLOCKS:
@@ -911,8 +1001,8 @@ class BaseCommands:
                                 self.efuses[block.key_purpose].get()
                             ):
                                 raise esptool.FatalError(
-                                    "%s must be readable, stop this operation!"
-                                    % efuse_name
+                                    f"{efuse_name} must be readable, "
+                                    f"stop this operation!"
                                 )
                             break
                 # make full list of which efuses will be disabled
@@ -924,8 +1014,8 @@ class BaseCommands:
                 ]
                 names = ", ".join(e.name for e in all_disabling)
                 log.print(
-                    "Permanently read-disabling eFuse%s %s"
-                    % ("s" if len(all_disabling) > 1 else "", names)
+                    f"Permanently read-disabling eFuse"
+                    f"{'s' if len(all_disabling) > 1 else ''} {names}"
                 )
                 efuse.disable_read()
 
@@ -966,8 +1056,8 @@ class BaseCommands:
                 ]
                 names = ", ".join(e.name for e in all_disabling)
                 log.print(
-                    "Permanently write-disabling eFuse%s %s"
-                    % ("s" if len(all_disabling) > 1 else "", names)
+                    f"Permanently write-disabling eFuse"
+                    f"{'s' if len(all_disabling) > 1 else ''} {names}"
                 )
                 efuse.disable_write()
 
@@ -1077,11 +1167,10 @@ class BaseCommands:
             )
         data_block.reverse()
         log.print(
-            "bit_number:   "
-            "[%-03d]........................................................[0]"
-            % (data_block.len - 1)
+            f"bit_number:   [{data_block.len - 1:03d}]"
+            f"........................................................[0]"
         )
-        log.print("BLOCK%-2d   :" % block_obj.id, data_block)
+        log.print(f"BLOCK{block_obj.id:>2d}   :", data_block)
         block_obj.print_block(data_block, "regs_to_write", debug=True)
         block_obj.save(data_block.bytes[::-1])
 

@@ -29,7 +29,7 @@ class EfuseBlock(base_fields.EfuseBlockBase):
 
     def __init__(self, parent, param, skip_read=False):
         parent.read_coding_scheme()
-        super(EfuseBlock, self).__init__(parent, param, skip_read=skip_read)
+        super().__init__(parent, param, skip_read=skip_read)
 
     def apply_coding_scheme(self):
         data = self.get_raw(from_read=False)[::-1]
@@ -66,14 +66,16 @@ class EspEfuses(base_fields.EspEfusesBase):
     ):
         super().__init__(esp, skip_connect, debug, do_not_confirm, extend_efuse_table)
         self.Blocks = EfuseDefineBlocks()
-        self.Fields = EfuseDefineFields(extend_efuse_table)
+        chip_revision = 300 if skip_connect else esp.get_chip_revision()
+        revision_file = "esp32p4_v3.0" if chip_revision >= 300 else None
+        log.print(f"Loading eFuses for {esp.CHIP_NAME} v{chip_revision / 100:.1f}...")
+        self.Fields = EfuseDefineFields(extend_efuse_table, revision=revision_file)
         self.REGS = EfuseDefineRegisters
         self.BURN_BLOCK_DATA_NAMES = self.Blocks.get_burn_block_data_names()
         self.BLOCKS_FOR_KEYS = self.Blocks.get_blocks_for_keys()
         if esp.CHIP_NAME != "ESP32-P4":
             raise esptool.FatalError(
-                "Expected the 'esp' param for ESP32-P4 chip but got for '%s'."
-                % (esp.CHIP_NAME)
+                f"Expected the 'esp' param for ESP32-P4 chip but got for '{esp.CHIP_NAME}'."
             )
         if not skip_connect:
             flags = self._esp.get_security_info()["flags"]
@@ -233,7 +235,7 @@ class EspEfuses(base_fields.EspEfusesBase):
         apb_freq = self.get_crystal_freq()
         if apb_freq != 40:
             raise esptool.FatalError(
-                "The eFuse supports only xtal=40M (xtal was %d)" % apb_freq
+                f"The eFuse supports only xtal=40M (xtal was {apb_freq}"
             )
         # keep default timing settings
 
@@ -250,7 +252,7 @@ class EspEfuses(base_fields.EspEfusesBase):
                 ]
                 block.err_bitarray.pos = 0
                 for word in reversed(words):
-                    block.err_bitarray.overwrite(BitArray("uint:32=%d" % word))
+                    block.err_bitarray.overwrite(BitArray(f"uint:32={word}"))
                 block.num_errors = block.err_bitarray.count(True)
                 block.fail = block.num_errors != 0
             else:
@@ -367,7 +369,7 @@ class EfuseMacField(EfuseField):
             mac = mac.bytes
         else:
             mac = self.get_raw(from_read)
-        return "%s %s" % (util.hexify(mac, ":"), self.check())
+        return " ".join([util.hexify(mac, ":"), self.check()])
 
     def save(self, new_value):
         def print_field(e, new_value):
@@ -378,7 +380,7 @@ class EfuseMacField(EfuseField):
         if self.name == "CUSTOM_MAC":
             bitarray_mac = self.convert_to_bitstring(new_value)
             print_field(self, bitarray_mac)
-            super(EfuseMacField, self).save(new_value)
+            super().save(new_value)
         else:
             # Writing the BLOCK1 (MAC_SPI_8M_0) default MAC is not possible,
             # as it's written in the factory.
@@ -387,7 +389,9 @@ class EfuseMacField(EfuseField):
 
 # fmt: off
 class EfuseKeyPurposeField(EfuseField):
-    KEY_PURPOSES = [
+    key_purpose_len = 4  # bits for key purpose
+    KeyPurposeType = tuple[str, int, str | None, str | None, str]
+    KEY_PURPOSES: list[KeyPurposeType] = [
         ("USER",                         0,  None,       None,      "no_need_rd_protect"),   # User purposes (software-only use)
         ("ECDSA_KEY",                    1,  None,       "Reverse", "need_rd_protect"),      # ECDSA key
         ("XTS_AES_256_KEY_1",            2,  None,       "Reverse", "need_rd_protect"),      # XTS_AES_256_KEY_1 (flash/PSRAM encryption)
@@ -403,6 +407,14 @@ class EfuseKeyPurposeField(EfuseField):
         ("KM_INIT_KEY",                  12, None,       None,      "need_rd_protect"),      # init key that is used for the generation of AES/ECDSA key
         ("XTS_AES_256_KEY",              -1, "VIRTUAL",  None,      "no_need_rd_protect"),   # Virtual purpose splits to XTS_AES_256_KEY_1 and XTS_AES_256_KEY_2
     ]
+    CUSTOM_KEY_PURPOSES: list[KeyPurposeType] = []
+    for id in range(0, 1 << key_purpose_len):
+        if id not in [p[1] for p in KEY_PURPOSES]:
+            CUSTOM_KEY_PURPOSES.append((f"CUSTOM_{id}", id, None, None, "no_need_rd_protect"))
+            CUSTOM_KEY_PURPOSES.append((f"CUSTOM_DIGEST_{id}", id, "DIGEST", None, "no_need_rd_protect"))
+    CUSTOM_KEY_PURPOSES.append(("CUSTOM_MAX", (1 << key_purpose_len) - 1, None, None, "no_need_rd_protect"))
+    CUSTOM_KEY_PURPOSES.append(("CUSTOM_DIGEST_MAX", (1 << key_purpose_len) - 1, "DIGEST", None, "no_need_rd_protect"))
+    KEY_PURPOSES += CUSTOM_KEY_PURPOSES
 # fmt: on
     KEY_PURPOSES_NAME = [name[0] for name in KEY_PURPOSES]
     DIGEST_KEY_PURPOSES = [name[0] for name in KEY_PURPOSES if name[2] == "DIGEST"]
@@ -445,4 +457,4 @@ class EfuseKeyPurposeField(EfuseField):
 
     def save(self, new_value):
         raw_val = int(self.check_format(str(new_value)))
-        return super(EfuseKeyPurposeField, self).save(raw_val)
+        return super().save(raw_val)

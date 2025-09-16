@@ -159,8 +159,10 @@ class StubFlasher:
     # directories will be searched in the order of STUB_SUBDIRS
     STUB_SUBDIRS = ["1"]
 
-    def __init__(self, chip_name):
-        with open(self.get_json_path(chip_name)) as json_file:
+    def __init__(self, target):
+        json_name = target.STUB_CLASS.stub_json_name(target)
+
+        with open(self._get_json_path(json_name, target.CHIP_NAME)) as json_file:
             stub = json.load(json_file)
 
         self.text = base64.b64decode(stub["text"])
@@ -176,10 +178,9 @@ class StubFlasher:
 
         self.bss_start = stub.get("bss_start")
 
-    def get_json_path(self, chip_name):
-        chip_name = strip_chip_name(chip_name)
+    def _get_json_path(self, json_name, chip_name):
         for i, subdir in enumerate(self.STUB_SUBDIRS):
-            json_path = os.path.join(self.STUB_DIR, subdir, f"{chip_name}.json")
+            json_path = os.path.join(self.STUB_DIR, subdir, json_name)
             if os.path.exists(json_path):
                 if i:
                     log.warning(
@@ -198,7 +199,7 @@ class StubFlasher:
         cls.STUB_SUBDIRS = [subdir]
 
 
-class ESPLoader(object):
+class ESPLoader:
     """Base class providing access to ESP ROM & software stub bootloaders.
     Subclasses provide ESP8266 & ESP32 Family specific functionality.
 
@@ -420,7 +421,7 @@ class ESPLoader(object):
     def _set_port_baudrate(self, baud):
         try:
             self._port.baudrate = baud
-        except IOError:
+        except OSError:
             raise FatalError(
                 f"Failed to set baud rate {baud}. The driver may not support this rate."
             )
@@ -933,7 +934,7 @@ class ESPLoader(object):
         """Start downloading an application image to RAM"""
         # check we're not going to overwrite a running stub with this data
         if self.IS_STUB:
-            stub = StubFlasher(self.CHIP_NAME)
+            stub = StubFlasher(self)
             load_start = offset
             load_end = offset + size
             for stub_start, stub_end in [
@@ -1066,11 +1067,16 @@ class ESPLoader(object):
                 else:
                     raise
 
-    def flash_finish(self, reboot=False):
+    def flash_finish(self, reboot=False, timeout=DEFAULT_TIMEOUT):
         """Leave flash mode and run/reboot"""
         pkt = struct.pack("<I", int(not reboot))
         # stub sends a reply to this command
-        self.check_command("leave flash download mode", self.ESP_CMDS["FLASH_END"], pkt)
+        self.check_command(
+            "leave flash download mode",
+            self.ESP_CMDS["FLASH_END"],
+            pkt,
+            timeout=timeout,
+        )
 
     def run(self, reboot=False):
         """Run application code in flash"""
@@ -1256,8 +1262,8 @@ class ESPLoader(object):
             return cls.FLASH_SIZES[arg]
         except KeyError:
             raise FatalError(
-                "Flash size '%s' is not supported by this chip type. "
-                "Supported sizes: %s" % (arg, ", ".join(cls.FLASH_SIZES.keys()))
+                f"Flash size '{arg}' is not supported by this chip type. "
+                f"Supported sizes: {', '.join(cls.FLASH_SIZES.keys())}"
             )
 
     @classmethod
@@ -1269,15 +1275,14 @@ class ESPLoader(object):
             return cls.FLASH_FREQUENCY[arg]
         except KeyError:
             raise FatalError(
-                "Flash frequency '%s' is not supported by this chip type. "
-                "Supported frequencies: %s"
-                % (arg, ", ".join(cls.FLASH_FREQUENCY.keys()))
+                f"Flash frequency '{arg}' is not supported by this chip type. "
+                f"Supported frequencies: {', '.join(cls.FLASH_FREQUENCY.keys())}"
             )
 
     def run_stub(self, stub: StubFlasher | None = None) -> "ESPLoader":
         log.stage()
         if stub is None:
-            stub = StubFlasher(self.CHIP_NAME)
+            stub = StubFlasher(self)
 
         if self.sync_stub_detected:
             log.stage(finish=True)
@@ -1401,7 +1406,7 @@ class ESPLoader(object):
                     raise
 
     @stub_and_esp32_function_only
-    def flash_defl_finish(self, reboot=False):
+    def flash_defl_finish(self, reboot=False, timeout=DEFAULT_TIMEOUT):
         """Leave compressed flash mode and run/reboot"""
         if not reboot and not self.IS_STUB:
             # skip sending flash_finish to ROM loader, as this
@@ -1409,7 +1414,10 @@ class ESPLoader(object):
             return
         pkt = struct.pack("<I", int(not reboot))
         self.check_command(
-            "leave compressed flash mode", self.ESP_CMDS["FLASH_DEFL_END"], pkt
+            "leave compressed flash mode",
+            self.ESP_CMDS["FLASH_DEFL_END"],
+            pkt,
+            timeout=timeout,
         )
         self.in_bootloader = False
 
@@ -1836,6 +1844,10 @@ class StubMixin:
         self.cache = rom_loader.cache
         self.flush_input()  # resets _slip_reader
 
+    def stub_json_name(self):
+        chip_name = strip_chip_name(self.CHIP_NAME)
+        return f"{chip_name}.json"
+
 
 def slip_reader(port, trace_function):
     """Generator to read SLIP packets from a serial port.
@@ -1938,7 +1950,7 @@ def slip_reader(port, trace_function):
                 partial_packet += b
 
 
-class HexFormatter(object):
+class HexFormatter:
     """
     Wrapper class which takes binary data in its constructor
     and returns a hex string as it's __str__ method.
@@ -1977,10 +1989,9 @@ class HexFormatter(object):
                     for c in line.decode("ascii", "replace")
                 )
                 s = s[16:]
-                result += "\n    %-16s %-16s | %s" % (
-                    hexify(line[:8], False),
-                    hexify(line[8:], False),
-                    ascii_line,
+                result += (
+                    f"\n    {hexify(line[:8], False):<16s} "
+                    f"{hexify(line[8:], False):<16s} | {ascii_line}"
                 )
             return result
         else:

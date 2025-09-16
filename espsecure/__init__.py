@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa, utils
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.utils import int_to_bytes
 
+from esptool.cli_util import OptionEatAll
 from esptool.logger import log
 
 import esptool
@@ -250,8 +251,8 @@ def load_ecdsa_signing_key(keyfile: IO) -> ec.EllipticCurvePrivateKey:
             "Incorrect ECDSA private key specified. "
             "Please check algorithm and/or format."
         )
-    if not isinstance(sk.curve, (ec.SECP192R1, ec.SECP256R1)):
-        raise esptool.FatalError("Supports NIST192p and NIST256p keys only.")
+    if not isinstance(sk.curve, ec.SECP192R1 | ec.SECP256R1 | ec.SECP384R1):
+        raise esptool.FatalError("Supports NIST192p, NIST256p and NIST384p keys only.")
     return sk
 
 
@@ -304,7 +305,7 @@ def _load_sbv2_signing_key(
             )
         return sk
     if isinstance(sk, ec.EllipticCurvePrivateKey):
-        if not isinstance(sk.curve, (ec.SECP192R1, ec.SECP256R1, ec.SECP384R1)):
+        if not isinstance(sk.curve, ec.SECP192R1 | ec.SECP256R1 | ec.SECP384R1):
             raise esptool.FatalError(
                 "Key file uses incorrect curve. Secure Boot V2 + ECDSA only supports "
                 "NIST192p, NIST256p, NIST384p (aka prime192v1 / secp192r1, "
@@ -328,7 +329,7 @@ def _load_sbv2_pub_key(keydata: bytes) -> rsa.RSAPublicKey | ec.EllipticCurvePub
             )
         return vk
     if isinstance(vk, ec.EllipticCurvePublicKey):
-        if not isinstance(vk.curve, (ec.SECP192R1, ec.SECP256R1, ec.SECP384R1)):
+        if not isinstance(vk.curve, ec.SECP192R1 | ec.SECP256R1 | ec.SECP384R1):
             raise esptool.FatalError(
                 "Key file uses incorrect curve. Secure Boot V2 + ECDSA only supports "
                 "NIST192p, NIST256p, NIST384p (aka prime192v1 / secp192r1, "
@@ -1055,7 +1056,7 @@ def verify_signature_v2(hsm: bool, hsm_config: IO | None, keyfile: IO, datafile:
         )
 
 
-def extract_public_key(version: int, keyfile: IO, public_keyfile: IO):
+def extract_public_key(version: str, keyfile: IO, public_keyfile: IO):
     _check_output_is_not_input(keyfile, public_keyfile)
     if version == "1":
         """
@@ -1063,16 +1064,21 @@ def extract_public_key(version: int, keyfile: IO, public_keyfile: IO):
         as raw binary data.
         """
         sk = _load_ecdsa_signing_key(keyfile)
+        # For Secure Boot V1, output raw binary format (X and Y coordinates)
+        public_numbers = sk.public_key().public_numbers()
+        x_bytes = public_numbers.x.to_bytes(32, "big")
+        y_bytes = public_numbers.y.to_bytes(32, "big")
+        vk = x_bytes + y_bytes
     elif version == "2":
         """
         Load an RSA or an ECDSA private key and extract the public key
         as raw binary data.
         """
         sk = _load_sbv2_signing_key(keyfile.read())
-    vk = sk.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
+        vk = sk.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
     public_keyfile.write(vk)
     log.print(f'"{keyfile.name}" public key extracted to "{public_keyfile.name}".')
 
@@ -1160,9 +1166,8 @@ def signature_info_v2(datafile: IO):
             )
 
         log.print(
-            f"Public key digest for block {sig_blk_num}: ".join(
-                f"{c:02x}" for c in bytearray(key_digest)
-            )
+            f"Public key digest for block {sig_blk_num}: "
+            f"{' '.join(f'{c:02x}' for c in bytearray(key_digest))}"
         )
 
 
@@ -1645,6 +1650,8 @@ def generate_signing_key_cli(version, scheme, keyfile):
     "--keyfile",
     "-k",
     type=click.File("rb"),
+    cls=OptionEatAll,
+    required=True,
     multiple=True,
     help="Private key file for signing. Key is in PEM format.",
 )
@@ -1677,6 +1684,7 @@ def generate_signing_key_cli(version, scheme, keyfile):
 @click.option(
     "--pub-key",
     type=click.File("rb"),
+    cls=OptionEatAll,
     multiple=True,
     help="Public key files corresponding to the private key used to generate the "
     "pre-calculated signatures. Keys should be in PEM format.",
@@ -1684,6 +1692,7 @@ def generate_signing_key_cli(version, scheme, keyfile):
 @click.option(
     "--signature",
     type=click.File("rb"),
+    cls=OptionEatAll,
     multiple=True,
     default=None,
     help="Pre-calculated signatures. Signatures generated using external private keys "
@@ -1957,7 +1966,11 @@ def main(argv: list[str] | None = None):
     Arguments and their values need to be added as individual items to the list
     e.g. "--port /dev/ttyUSB1" thus becomes ['--port', '/dev/ttyUSB1'].
     """
-    cli(args=argv)
+    try:
+        cli(args=argv)
+    except SystemExit as e:
+        if e.code != 0:
+            raise
 
 
 def _main():
