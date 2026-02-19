@@ -35,6 +35,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: pioarduino
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v5
@@ -96,7 +98,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: master_oem
+          ref: pioarduino
         if: startsWith(github.ref, 'refs/tags/')
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -119,6 +121,8 @@ jobs:
       steps:
         - name: Checkout repository
           uses: actions/checkout@v4
+          with:
+            ref: pioarduino
         - name: Zip esptool.py
           run: |
             echo "Packaging new esptool release: ${{ github.ref_name }}"
