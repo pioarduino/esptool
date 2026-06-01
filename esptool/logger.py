@@ -76,6 +76,7 @@ class EsptoolLogger(TemplateLogger):
     ansi_clear: str = ""
     ansi_line_up: str = ""
     ansi_line_clear: str = ""
+    ansi_line_up_pos1: str = ""
 
     _stage_active: bool = False
     _newline_count: int = 0
@@ -126,24 +127,26 @@ class EsptoolLogger(TemplateLogger):
 
                     init()  # Enable ANSI support on Windows
                 except ImportError:
-                    inst._smart_features = False
+                    cls.instance._smart_features = False
 
-        if inst._smart_features:
-            inst.ansi_red = "\033[1;31m"
-            inst.ansi_yellow = "\033[0;33m"
-            inst.ansi_blue = "\033[1;36m"
-            inst.ansi_normal = "\033[0m"
-            inst.ansi_clear = "\033[K"
-            inst.ansi_line_up = "\033[1A"
-            inst.ansi_line_clear = "\x1b[2K"
+        if cls.instance._smart_features:
+            cls.instance.ansi_red = "\033[1;31m"
+            cls.instance.ansi_yellow = "\033[0;33m"
+            cls.instance.ansi_blue = "\033[1;36m"
+            cls.instance.ansi_normal = "\033[0m"
+            cls.instance.ansi_clear = "\033[K"
+            cls.instance.ansi_line_up = "\033[1A"
+            cls.instance.ansi_line_clear = "\x1b[2K"
+            cls.instance.ansi_line_up_pos1 = "\033[F"
         else:
-            inst.ansi_red = ""
-            inst.ansi_yellow = ""
-            inst.ansi_blue = ""
-            inst.ansi_normal = ""
-            inst.ansi_clear = ""
-            inst.ansi_line_up = ""
-            inst.ansi_line_clear = ""
+            cls.instance.ansi_red = ""
+            cls.instance.ansi_yellow = ""
+            cls.instance.ansi_blue = ""
+            cls.instance.ansi_normal = ""
+            cls.instance.ansi_clear = ""
+            cls.instance.ansi_line_up = ""
+            cls.instance.ansi_line_clear = ""
+            cls.instance.ansi_line_up_pos1 = ""
 
     def print(self, *args, **kwargs):
         """
@@ -232,18 +235,18 @@ class EsptoolLogger(TemplateLogger):
         Call in a loop to print a progress bar overwriting itself in place.
         If terminal doesn't support ANSI escape codes, no overwriting happens.
         """
-        filled = int(bar_length * cur_iter // total_iters)
-        if filled == bar_length:
-            bar = "=" * bar_length
-        elif filled == 0:
-            bar = " " * bar_length
-        else:
-            bar = f"{'=' * (filled - 1)}>{' ' * (bar_length - filled)}"
-
         percent = f"{100 * (cur_iter / float(total_iters)):.1f}"
+        filled_length = int(bar_length * cur_iter // total_iters)
+        bar = "█" * filled_length + "░" * (bar_length - filled_length)
+
+        end_char = (
+            "\n"
+            if not self._smart_features or cur_iter == total_iters
+            else f"{self.ansi_line_up_pos1}"
+        )
         self.print(
             f"\r{self.ansi_clear}{prefix}[{bar}] {percent:>5}%{suffix} ",
-            end="\n" if not self._smart_features or cur_iter == total_iters else "",
+            end=end_char,
             flush=True,
         )
 
