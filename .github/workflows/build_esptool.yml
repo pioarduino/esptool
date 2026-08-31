@@ -58,7 +58,7 @@ jobs:
             }
           icon-file: ${{ matrix.platform == 'windows-amd64' && 'ci/espressif.ico' || '' }}
           target-platform: ${{ matrix.platform }}
-          additional-args: "--collect-submodules=rich._unicode_data --collect-submodules=bitstring"
+          additional-args: "--collect-submodules=rich._unicode_data --collect-submodules=bitstring --collect-submodules=serial.urlhandler"
 
       - name: Archive artifact
         uses: actions/upload-artifact@v7
