@@ -25,10 +25,25 @@ helpers such as `die` and `progress`.
 that reads ``EspLog.instance``) after installing `EsptoolLogger`.
 """
 
+import os
+import sys
 from abc import ABC, abstractmethod
 from typing import Any
 
 from esp_pylib.logger import EspLog, EspLogBase, Verbosity, log
+
+# TERM values that historically implied ANSI control-code support even when
+# the stream isn't a real TTY (e.g. PlatformIO's build/upload task in VS
+# Code's integrated terminal pipes esptool's stdout, so ``isatty()`` is
+# False, but TERM is still set to one of these).
+_TERM_SUPPORTS_CONTROL_CODES = (
+    "xterm",
+    "xterm-256color",
+    "screen",
+    "screen-256color",
+    "linux",
+    "vt100",
+)
 
 __all__ = [
     "EsptoolLogger",
@@ -321,6 +336,92 @@ class EsptoolLogger(EspLog):
         kwargs.pop("flush", None)
         kwargs.setdefault("soft_wrap", True)
         super().print(*args, **kwargs)
+
+    @staticmethod
+    def _stream_supports_control_codes(out: Any) -> bool:
+        """Esptool's historical TTY heuristic (from before the esp-pylib migration).
+
+        `EspLog._get_interactive_console` only trusts ``out.isatty()``. Some
+        runners (e.g. PlatformIO's build/upload task in VS Code's integrated
+        terminal) pipe esptool's stdout so ``isatty()`` is False, yet still
+        export a ``TERM`` that supports ANSI control codes and render such
+        redraw sequences correctly rather than printing them literally or
+        dropping them. Mirrors the pre-migration esptool logger's
+        ``_set_smart_features`` detection: ``isatty()`` OR a known-capable
+        ``TERM``.
+        """
+        try:
+            isatty = hasattr(out, "isatty") and out.isatty()
+        except (AttributeError, ValueError, OSError):
+            isatty = False
+        term_supports_control_codes = (
+            os.getenv("TERM", "").lower() in _TERM_SUPPORTS_CONTROL_CODES
+        )
+        return isatty or term_supports_control_codes
+
+    def progress_bar(
+        self,
+        cur_iter: int,
+        total_iters: int,
+        prefix: str = "",
+        suffix: str = "",
+        bar_length: int = 30,
+    ) -> None:
+        """Print esptool's fixed-width Unicode progress bar.
+
+        Ported directly from the pre-migration esptool logger instead of
+        going through esp-pylib's Rich-based redraw helpers: those rely on
+        ``Console.is_terminal`` (``isatty()`` only) to decide whether control
+        codes survive rendering, and Rich silently strips ``\\r`` / erase
+        sequences whenever that's False. Some runners (e.g. PlatformIO's
+        build/upload task in VS Code's integrated terminal) pipe esptool's
+        stdout -- ``isatty()`` is False there even though the redraw
+        sequences are rendered correctly. Printing the raw ANSI sequences
+        with the plain builtin ``print`` (gated by the same ``isatty() OR
+        TERM`` heuristic as before) avoids that mismatch entirely.
+        """
+        if self._verbosity == Verbosity.SILENT or total_iters < 0:
+            return
+
+        if total_iters == 0:
+            cur_iter = 0
+            percent = "100.0"
+            is_complete = True
+        else:
+            cur_iter = max(0, min(cur_iter, total_iters))
+            percent = f"{100 * cur_iter / total_iters:.1f}"
+            is_complete = cur_iter == total_iters
+
+        filled_length = (
+            bar_length if total_iters == 0 else bar_length * cur_iter // total_iters
+        )
+        bar = "█" * filled_length + "░" * (bar_length - filled_length)
+
+        out = self._get_progress_print_file()
+        smart_features = (
+            self._verbosity != Verbosity.VERBOSE
+            and self._stream_supports_control_codes(out)
+        )
+        # Non-final updates move the cursor back to column 1 of the same row
+        # (``CSI F``) so the next update overwrites it in place; the final
+        # update (or a non-interactive stream) ends with a real newline.
+        end_char = "\n" if not smart_features or is_complete else "\033[F"
+        print(
+            f"\r\033[K{prefix}[{bar}] {percent:>5}%{suffix} ",
+            end=end_char,
+            file=out,
+            flush=True,
+        )
+        # Keep collapsible-stage bookkeeping in sync (normally done by
+        # `EspLog.print`/`_stage_track_newlines`, bypassed above so the raw
+        # ANSI sequence reaches *out* unfiltered).
+        on_stdout = out is sys.stdout
+        if self._stage_active and on_stdout and self._stage_can_collapse():
+            if end_char == "\n":
+                self._stage_newline_count += 1
+                self._stage_progress_visible = False
+            else:
+                self._stage_progress_visible = True
 
 
 # Wire esptool's subclass into the shared singleton before anything imports

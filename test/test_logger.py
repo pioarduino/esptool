@@ -2,12 +2,7 @@ from io import StringIO
 from unittest.mock import patch
 
 import pytest
-from esp_pylib.logger import (
-    ASCII_PROGRESS_CHAR,
-    UNICODE_PROGRESS_CHAR,
-    EspLog,
-    EspLogBase,
-)
+from esp_pylib.logger import EspLog, EspLogBase
 
 from esptool import __version__
 from esptool.cmds import version
@@ -368,75 +363,85 @@ class TestLogger:
         assert "Line1" not in out.getvalue()
         assert "Line2" not in out.getvalue()
 
-    def test_progress_bar_stage_bookkeeping(self, logger):
+    def test_progress_bar_stage_bookkeeping(self, logger, monkeypatch, capsys):
         """Completed progress inside a stage must count toward line erase."""
         logger._smart_features = True
-        # Route progress through Rich capture so this bookkeeping test does not
-        # depend on the host stdout encoding (Windows cp1252 cannot encode the
-        # Unicode bar glyphs Rich would otherwise emit on a real console).
         logger._stdout._force_terminal = True
-        with logger._stdout.capture():
-            logger.stage()
-            logger.progress_bar(4, 4, prefix="Reading: ", bar_length=10)
-            assert logger._stage_newline_count == 1
-            assert not logger._stage_progress_visible
-            logger.stage(finish=True)
-            assert logger._stage_newline_count == 0
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+        logger.stage()
+        logger.progress_bar(4, 4, prefix="Reading: ", bar_length=10)
+        assert logger._stage_newline_count == 1
+        assert not logger._stage_progress_visible
+        logger.stage(finish=True)
+        assert logger._stage_newline_count == 0
 
-            logger.stage()
-            logger.progress_bar(2, 4, prefix="Reading: ", bar_length=10)
-            assert logger._stage_newline_count == 0
-            assert logger._stage_progress_visible
-            logger.stage(finish=True)
-            assert not logger._stage_progress_visible
+        logger.stage()
+        logger.progress_bar(2, 4, prefix="Reading: ", bar_length=10)
+        assert logger._stage_newline_count == 0
+        assert logger._stage_progress_visible
+        logger.stage(finish=True)
+        assert not logger._stage_progress_visible
+        capsys.readouterr()
 
-    def test_progress_bar(self, logger):
-        # Progress rendering is inherited from `esp_pylib.logger.EspLog`
-        # (Rich bar, or a fixed-width plain bar when `no_color` is set).
-        #
-        # `EspLog.progress_bar` picks its output Console based on
-        # `self._stdout.is_terminal`: on an interactive terminal it writes
-        # through `self._stdout` (and `Console.capture()` sees the output),
-        # but on a non-TTY stream it creates a *fresh* `Console(file=sys.stdout)`
-        # and writes there, bypassing capture. GitLab CI runs without a TTY
-        # and without `FORCE_COLOR`, so without forcing terminal mode here
-        # the captured buffer ends up empty and the assertions below would
-        # fail. Force the interactive code path so the test is independent
-        # of the surrounding terminal / env-var state.
-        #
-        # On legacy Windows consoles Rich uses ASCII glyphs (`=`) instead of
-        # Unicode (`━`) for the plain `no_color` bar. The active console
-        # may not be `logger._stdout` itself, so accept either glyph set.
-        logger._stdout._force_terminal = True
-        logger._stdout.no_color = True
-        logger.no_color = True
-        with logger._stdout.capture() as captured:
-            logger.progress_bar(
-                cur_iter=2,
-                total_iters=4,
-                prefix="Progress: ",
-                suffix=" (2/4)",
-                bar_length=10,
-            )
-            logger.progress_bar(
-                cur_iter=4,
-                total_iters=4,
-                prefix="Progress: ",
-                suffix=" (4/4)",
-                bar_length=10,
-            )
-        output = captured.get()
-        half_bar = (
-            f"Progress: {UNICODE_PROGRESS_CHAR * 5}       50.0% (2/4)" in output
-            or f"Progress: {ASCII_PROGRESS_CHAR * 5}       50.0% (2/4)" in output
+    def test_progress_bar(self, monkeypatch, capsys):
+        """Interactive redraw uses ``\\r`` + ``CSI K`` + ``CSI F`` (cursor up)."""
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+        logger = EsptoolLogger()
+        logger.progress_bar(
+            cur_iter=2,
+            total_iters=4,
+            prefix="Progress: ",
+            suffix=" (2/4)",
+            bar_length=10,
         )
-        full_bar = (
-            f"Progress: {UNICODE_PROGRESS_CHAR * 10} 100.0% (4/4)" in output
-            or f"Progress: {ASCII_PROGRESS_CHAR * 10} 100.0% (4/4)" in output
+        logger.progress_bar(
+            cur_iter=4,
+            total_iters=4,
+            prefix="Progress: ",
+            suffix=" (4/4)",
+            bar_length=10,
         )
-        assert half_bar
-        assert full_bar
+        output = capsys.readouterr().out
+        assert "\r\x1b[K" in output
+        assert "\x1b[F" in output
+        assert "Progress: [█████░░░░░]  50.0% (2/4)" in output
+        assert "Progress: [██████████] 100.0% (4/4) " in output
         assert output.endswith("\n")
+
+    def test_progress_bar_overwrites_when_piped_with_capable_term(self, monkeypatch):
+        """Redraw in place on a non-TTY stream whose ``TERM`` supports ANSI.
+
+        Regression test: PlatformIO's build/upload task in VS Code's
+        integrated terminal pipes esptool's stdout (``isatty()`` is False)
+        but still exports a capable ``TERM``. Without the fallback in
+        ``EsptoolLogger._stream_supports_control_codes``, the bar would be
+        printed with a plain trailing newline on every update instead of
+        overwriting the previous one in place.
+        """
+        monkeypatch.setenv("TERM", "xterm-256color")
+        piped = StringIO()
+        piped.isatty = lambda: False  # type: ignore[method-assign]
+
+        from esp_pylib import logger as esp_pylib_logger
+
+        logger = EsptoolLogger()
+        token = esp_pylib_logger._progress_output.set(piped)
+        try:
+            logger.progress_bar(1, 2, prefix="Writing ", bar_length=10)
+            logger.progress_bar(2, 2, prefix="Writing ", bar_length=10)
+        finally:
+            esp_pylib_logger._progress_output.reset(token)
+
+        output = piped.getvalue()
+        assert output.count("\r\x1b[K") == 2
+        assert "\x1b[F" in output
+        assert "Writing [█████░░░░░]  50.0% " in output
+        assert output.endswith("\n")
+        assert "Writing [██████████] 100.0% " in output
+        assert output.endswith("\n")
+        # A single redraw survives in place: the mid-progress bar text must
+        # not appear on its own separate line.
+        assert output.count("\n") == 1
 
     def test_set_incomplete_logger(self, logger):
         with pytest.raises(
