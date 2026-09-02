@@ -2,12 +2,7 @@ from io import StringIO
 from unittest.mock import patch
 
 import pytest
-from esp_pylib.logger import (
-    ASCII_PROGRESS_CHAR,
-    UNICODE_PROGRESS_CHAR,
-    EspLog,
-    EspLogBase,
-)
+from esp_pylib.logger import EspLog, EspLogBase
 
 from esptool import __version__
 from esptool.cmds import version
@@ -391,25 +386,8 @@ class TestLogger:
             assert not logger._stage_progress_visible
 
     def test_progress_bar(self, logger):
-        # Progress rendering is inherited from `esp_pylib.logger.EspLog`
-        # (Rich bar, or a fixed-width plain bar when `no_color` is set).
-        #
-        # `EspLog.progress_bar` picks its output Console based on
-        # `self._stdout.is_terminal`: on an interactive terminal it writes
-        # through `self._stdout` (and `Console.capture()` sees the output),
-        # but on a non-TTY stream it creates a *fresh* `Console(file=sys.stdout)`
-        # and writes there, bypassing capture. GitLab CI runs without a TTY
-        # and without `FORCE_COLOR`, so without forcing terminal mode here
-        # the captured buffer ends up empty and the assertions below would
-        # fail. Force the interactive code path so the test is independent
-        # of the surrounding terminal / env-var state.
-        #
-        # On legacy Windows consoles Rich uses ASCII glyphs (`=`) instead of
-        # Unicode (`━`) for the plain `no_color` bar. The active console
-        # may not be `logger._stdout` itself, so accept either glyph set.
+        # Use the interactive path so the redraw escape sequence is captured.
         logger._stdout._force_terminal = True
-        logger._stdout.no_color = True
-        logger.no_color = True
         with logger._stdout.capture() as captured:
             logger.progress_bar(
                 cur_iter=2,
@@ -426,16 +404,9 @@ class TestLogger:
                 bar_length=10,
             )
         output = captured.get()
-        half_bar = (
-            f"Progress: {UNICODE_PROGRESS_CHAR * 5}       50.0% (2/4)" in output
-            or f"Progress: {ASCII_PROGRESS_CHAR * 5}       50.0% (2/4)" in output
-        )
-        full_bar = (
-            f"Progress: {UNICODE_PROGRESS_CHAR * 10} 100.0% (4/4)" in output
-            or f"Progress: {ASCII_PROGRESS_CHAR * 10} 100.0% (4/4)" in output
-        )
-        assert half_bar
-        assert full_bar
+        assert "\r\x1b[2K" in output
+        assert "Progress: [█████░░░░░]  50.0% (2/4)" in output
+        assert "Progress: [██████████] 100.0% (4/4) " in output
         assert output.endswith("\n")
 
     def test_set_incomplete_logger(self, logger):

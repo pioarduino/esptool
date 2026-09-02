@@ -322,6 +322,75 @@ class EsptoolLogger(EspLog):
         kwargs.setdefault("soft_wrap", True)
         super().print(*args, **kwargs)
 
+    def progress_bar(
+        self,
+        cur_iter: int,
+        total_iters: int,
+        prefix: str = "",
+        suffix: str = "",
+        bar_length: int = 30,
+    ) -> None:
+        """Print esptool's fixed-width Unicode progress bar.
+
+        Keep the historical bracketed bar instead of esp-pylib's Rich
+        ``ProgressBar`` so scripts retain their established output format.
+        Interactive redraws use carriage return followed by ``CSI 2K`` to
+        clear the current row; cursor-up sequences render incorrectly in the
+        VS Code integrated terminal.
+        """
+        if self._verbosity == Verbosity.SILENT or total_iters < 0:
+            return
+
+        if total_iters == 0:
+            cur_iter = 0
+            percent = "100.0"
+            is_complete = True
+        else:
+            cur_iter = max(0, min(cur_iter, total_iters))
+            percent = f"{100 * cur_iter / total_iters:.1f}"
+            is_complete = cur_iter == total_iters
+
+        filled_length = (
+            bar_length if total_iters == 0 else bar_length * cur_iter // total_iters
+        )
+        bar = "█" * filled_length + "░" * (bar_length - filled_length)
+
+        interactive = self._get_interactive_console()
+        out = self._get_progress_print_file()
+        console = (
+            interactive
+            if interactive is not None
+            else self._progress_console_for_stream(out)
+        )
+        end = (
+            "\n"
+            if interactive is None
+            or is_complete
+            or self._verbosity == Verbosity.VERBOSE
+            else ""
+        )
+        if not end:
+            self._erase_line(console)
+
+        console.print(
+            f"{prefix}[{bar}] {percent:>5}%{suffix} ",
+            end=end,
+            markup=False,
+            highlight=False,
+        )
+        if not end:
+            console.file.flush()
+            if (
+                self._stage_active
+                and self._stage_can_collapse()
+                and console is self.stdout
+            ):
+                self._stage_progress_visible = True
+        elif console is self.stdout and self._stage_active:
+            self._stage_newline_count += 1
+            if self._stage_can_collapse():
+                self._stage_progress_visible = False
+
 
 # Wire esptool's subclass into the shared singleton before anything imports
 # ``log`` (re-exported from esp-pylib; it delegates to ``EspLog.instance``).
