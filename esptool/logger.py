@@ -119,81 +119,17 @@ class TemplateLogger(ABC):
         """
         self.warning(message)
 
-    ansi_red: str = ""
-    ansi_yellow: str = ""
-    ansi_blue: str = ""
-    ansi_normal: str = ""
-    ansi_clear: str = ""
-    ansi_line_up: str = ""
-    ansi_line_clear: str = ""
-    ansi_line_up_pos1: str = ""
+    def err(self, message: str, suggestion: str | None = None) -> None:
+        """Forward to `error` for legacy custom loggers."""
+        self.error(message)
 
     def debug(self, *args: Any) -> None:
         """Fallback to `print` for legacy custom loggers."""
         self.print("".join(str(a) for a in args))
 
 
-    def __new__(cls):
-        """
-        Singleton to ensure only one instance of the logger exists.
-        """
-        if cls.instance is None:
-            cls.instance = super().__new__(cls)
-            cls.instance.set_verbosity("auto")
-        return cls.instance
-
-    @classmethod
-    def _del(cls) -> None:
-        cls.instance = None
-
-    @classmethod
-    def _set_smart_features(cls, override: bool | None = None):
-        inst = cls.instance
-        assert inst is not None
-        # Check for smart terminal and color support
-        if override is not None:
-            inst._smart_features = override
-        else:
-            is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-            term_supports_color = os.getenv("TERM", "").lower() in (
-                "xterm",
-                "xterm-256color",
-                "screen",
-                "screen-256color",
-                "linux",
-                "vt100",
-            )
-            no_color = os.getenv("NO_COLOR", "").strip().lower() in ("1", "true", "yes")
-
-            # Determine if colors should be enabled
-            inst._smart_features = is_tty or term_supports_color and not no_color
-            # Handle Windows specifically
-            if sys.platform == "win32" and inst._smart_features:
-                try:
-                    from colorama import init
-
-                    init()  # Enable ANSI support on Windows
-                except ImportError:
-                    cls.instance._smart_features = False
-
-        if cls.instance._smart_features:
-            cls.instance.ansi_red = "\033[1;31m"
-            cls.instance.ansi_yellow = "\033[0;33m"
-            cls.instance.ansi_blue = "\033[1;36m"
-            cls.instance.ansi_normal = "\033[0m"
-            cls.instance.ansi_clear = "\033[K"
-            cls.instance.ansi_line_up = "\033[1A"
-            cls.instance.ansi_line_clear = "\x1b[2K"
-            cls.instance.ansi_line_up_pos1 = "\033[F"
-        else:
-            cls.instance.ansi_red = ""
-            cls.instance.ansi_yellow = ""
-            cls.instance.ansi_blue = ""
-            cls.instance.ansi_normal = ""
-            cls.instance.ansi_clear = ""
-            cls.instance.ansi_line_up = ""
-            cls.instance.ansi_line_clear = ""
-            cls.instance.ansi_line_up_pos1 = ""
+class _LegacyLoggerAdapter(EspLogBase):
+    """`EspLogBase` facade installed when ``set_logger`` receives a `TemplateLogger`.
 
     Delegates the seven legacy hooks to the wrapped logger. Inherits
     esp-pylib's default ``die``, ``progress``, and ``counter`` so internal
@@ -334,20 +270,20 @@ class EsptoolLogger(EspLog):
         esp-pylib tools. ``compact`` / ``auto`` only adjust stage collapsing
         (``_smart_features``); ``silent`` is :data:`Verbosity.SILENT`.
         """
-        percent = f"{100 * (cur_iter / float(total_iters)):.1f}"
-        filled_length = int(bar_length * cur_iter // total_iters)
-        bar = "█" * filled_length + "░" * (bar_length - filled_length)
+        if isinstance(verbosity, str):
+            key = verbosity.lower()
+            if key in _VERBOSITY_LEVEL_MAP:
+                super().set_verbosity(_VERBOSITY_LEVEL_MAP[key])
+                if key == "compact":
+                    self._smart_features = True
+                elif key == "auto":
+                    # Defer to esp-pylib's TTY-based detection.
+                    self._smart_features = None
+                return
+        super().set_verbosity(verbosity)
 
-        end_char = (
-            "\n"
-            if not self._smart_features or cur_iter == total_iters
-            else f"{self.ansi_line_up_pos1}"
-        )
-        self.print(
-            f"\r{self.ansi_clear}{prefix}[{bar}] {percent:>5}%{suffix} ",
-            end=end_char,
-            flush=True,
-        )
+    def set_logger(self, new_logger):  # type: ignore[override]
+        """Install a custom logger instance as the active singleton.
 
         Accepts a `TemplateLogger` (wrapped for esp-pylib) or any
         `EspLogBase` implementation. Assignment goes to ``EspLog.instance``,
