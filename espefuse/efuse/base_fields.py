@@ -10,6 +10,7 @@ import typing as t
 from abc import ABC, abstractmethod
 
 from bitstring import BitArray, Bits, BitStream, CreationError
+from rich.markup import escape
 
 import esptool
 from espefuse.efuse.mem_definition_base import (
@@ -490,6 +491,7 @@ class EspEfusesBase(ABC):
     BURN_BLOCK_DATA_NAMES: list[str] = []
     REGS: type[EfuseRegistersBase]
     Blocks: EfuseBlocksBase
+    show_token: bool = False
 
     def __init__(
         self,
@@ -678,6 +680,19 @@ class EspEfusesBase(ABC):
         if not have_wr_data_for_burn:
             log.print("Nothing to burn, see messages above.")
             return True
+        if self.show_token:
+            from espefuse.efuse.emulate_efuse_controller_base import EfsToken
+
+            token = EfsToken.build(
+                self._esp.CHIP_NAME,
+                self._esp.get_chip_revision(),
+                self.blocks,
+                None,
+                "EFSW",
+            )
+            del EfsToken
+            log.print("\neFuse token for burning:")
+            log.print(token)
         EspEfusesBase.confirm("", self.do_not_confirm)
 
         def burn_block(
@@ -731,7 +746,7 @@ class EspEfusesBase(ABC):
             )
         )
         if not do_not_confirm:
-            log.print("Type 'BURN' (all capitals) to continue.", flush=True)
+            log.print("Type 'BURN' (all capitals) to continue.")
             # Flush required for Pythons which disable line buffering,
             # ie mingw in mintty
             yes = input()
@@ -876,7 +891,7 @@ class EfuseFieldBase(EfuseProtectBase):
                     return BitArray(self.efuse_type + f"={new_value}")  # type: ignore[str-bytes-safe]
                 except CreationError as err:
                     log.print(
-                        f"New value '{new_value}' is not suitable for "  # type: ignore[str-bytes-safe]
+                        f"New value '{escape(str(new_value))}' is not suitable for "
                         f"{self.name} ({self.efuse_type})"
                     )
                     raise esptool.FatalError(err)
@@ -1134,7 +1149,8 @@ class EfuseMacFieldBase(EfuseFieldBase):
     def save(self, new_value: int | bytes | BitArray) -> None:
         def print_field(e: EfuseFieldBase, new_value: t.Any) -> None:
             log.print(
-                f"    - '{e.name}' ({e.description}) {e.get_bitstring()} -> {new_value}"
+                f"    - '{e.name}' ({escape(str(e.description))}) "
+                f"{e.get_bitstring()} -> {new_value}"
             )
 
         if self.name == "CUSTOM_MAC":

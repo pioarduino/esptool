@@ -265,6 +265,18 @@ class TestReadCommands(EfuseTestCase):
     def test_summary_json(self):
         self.espefuse_py("summary --format json")
 
+    def test_summary_json_to_file(self):
+        tmp_file = tempfile.NamedTemporaryFile(delete=False)
+        tmp_file.close()
+        self.espefuse_py(f"summary --format json --file {tmp_file.name}")
+        with open(tmp_file.name) as f:
+            try:
+                summary = json.load(f)
+            except json.JSONDecodeError as e:
+                pytest.fail(f"JSON summary was not written to the file: {e}")
+            assert summary, "JSON summary is empty"
+        os.unlink(tmp_file.name)
+
     def test_summary_json_raw_value(self):
         output = self.espefuse_py("summary --format json")
         start = output.find("{")
@@ -300,6 +312,11 @@ class TestReadCommands(EfuseTestCase):
             check_msg="The 'value_only' format can be used exactly for one eFuse.",
             ret_code=2,
         )
+
+    def test_summary_active(self):
+        full_summary_lines = self.espefuse_py("summary").count("\n")
+        active_summary_lines = self.espefuse_py("summary --active").count("\n")
+        assert active_summary_lines < full_summary_lines // 2
 
     def test_get_custom_mac(self):
         self.espefuse_py("get-custom-mac -h")
@@ -2064,6 +2081,22 @@ class TestPublicAPI(EfuseTestCase):
         args.update(kwargs)
         return init_commands(**args)
 
+    def test_public_api_summary_json_to_file(self):
+        tmp_file = tempfile.NamedTemporaryFile(delete=False)
+        tmp_file.close()
+        with self._init_commands() as espefuse:
+            file = open(tmp_file.name, "w")
+            espefuse.summary(format="json", file=file)
+            # The summary has to be on the disk, not left in the write buffer
+            with open(tmp_file.name) as f:
+                try:
+                    summary = json.load(f)
+                except json.JSONDecodeError as e:
+                    pytest.fail(f"JSON summary was not written to the file: {e}")
+                assert summary, "JSON summary is empty"
+            file.close()
+        os.unlink(tmp_file.name)
+
     @pytest.mark.skipif(arg_chip != "esp32", reason="This test is only for esp32")
     def test_public_api_batch_mode(self):
         with self._init_commands(batch_mode=True) as espefuse:
@@ -2336,7 +2369,7 @@ class TestMultipleCommands(EfuseTestCase):
             summary"
         )
         assert (
-            "Warning: Deprecated: Command 'burn_bit' is deprecated. "
+            "WARNING: Deprecated: Command 'burn_bit' is deprecated. "
             "Use 'burn-bit' instead." in output
         )
         output = self.espefuse_py("-d summary")
@@ -2509,3 +2542,93 @@ class TestCustomKeyPurposes(EfuseTestCase):
             " = cb 27 91 a3 71 b0 c0 32 2b f7 37 04 78 ba 09 62 "
             "22 4c ab 1c f2 28 78 79 e4 29 67 3e 7d a8 44 63 R/-"
         ) in output
+
+
+class TestTokenDump(EfuseTestCase):
+    def _set_target_wafer_version(self):
+        if arg_chip == "esp32":
+            # ESP32 has to be ECO3 (v3.0) for tests
+            self.espefuse_py("burn-efuse CHIP_VER_REV1 1 CHIP_VER_REV2 1")
+        elif arg_chip == "esp32c2":
+            # ESP32C2 has to be (v1.0) for tests
+            self.espefuse_py("burn-efuse WAFER_VERSION_MAJOR 1 WAFER_VERSION_MINOR 2")
+        elif arg_chip == "esp32c3":
+            # ESP32C3 has to be (v0.4) for tests
+            self.espefuse_py("burn-efuse WAFER_VERSION_MINOR_LO 4")
+
+    def _extract_token(self, output: str) -> str:
+        # Find tokens starting with EFS
+        m = re.search(r"(EFS[^\s]+)", output)
+        assert m, f"No efuse token found in output:\n{output}"
+        return m.group(1)
+
+    @pytest.mark.parametrize(
+        "expected_read_regs",
+        [
+            pytest.param(
+                "read_regs: 00010000",
+                id="esp32",
+                marks=pytest.mark.skipif(arg_chip != "esp32", reason="esp32-only"),
+            ),
+            pytest.param(
+                "read_regs: 00000000 00000001",
+                id=arg_chip,
+                marks=pytest.mark.skipif(
+                    arg_chip == "esp32", reason="other chips only"
+                ),
+            ),
+        ],
+    )
+    def test_token_dump_basic(self, expected_read_regs):
+        # Produce a token and verify dump/summary consume it.
+        out = self.espefuse_py("burn-efuse RD_DIS 1 --show-token")
+        token = self._extract_token(out)
+        # token contains chip name
+        assert f":{arg_chip}:" in token
+        parts = token.split(":")
+        assert len(parts) >= 6, "Unexpected token format"
+        # version field must be numeric
+        assert parts[2].isdigit(), f"Version field is not numeric: {parts[2]}"
+
+        # Use token with dump and summary; should produce readable efuse output
+        dump_out = self.espefuse_py(f"--token {token} dump")
+        assert expected_read_regs in dump_out
+
+        summary_out = self.espefuse_py(f"--token {token} summary --active")
+        assert "RD_DIS" in summary_out
+
+    @pytest.mark.parametrize(
+        "write_token, read_token, cmd",
+        [
+            pytest.param(
+                "EFSW:esp32:300:AAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8:::x8WPiQ",  # noqa: E501
+                "EFSR:esp32:300:AAABAAAAAAAAAAAAAIAAAAAAAAAAABAAAAAAAA::oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8:::fPaC-A",  # noqa: E501
+                f"burn-efuse RD_DIS 1  burn-bit BLOCK1 1  burn-key BLOCK2 {IMAGES_DIR}/256bit --no-protect-key --show-token",  # noqa: E501
+                id="esp32",
+                marks=pytest.mark.skipif(arg_chip != "esp32", reason="esp32-only"),
+            ),
+            pytest.param(
+                "EFSW:esp32c2:102:gQAAAAAEAAA:AgAAAAAAAAAAAAAA::v769vLu6ubi3trW0s7KxsK-urayrqqmop6alpKOioaA::LJ-90Q",  # noqa: E501
+                "EFSR:esp32c2:102:gQAAAAAEAAA:AgAAAAAAAAAAAAAA:AAAAAAAAEgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:v769vLu6ubi3trW0s7KxsK-urayrqqmop6alpKOioaA::Vn87fw",  # noqa: E501
+                f"burn-efuse WR_DIS 1  burn-bit BLOCK1 1  burn-key BLOCK_KEY0 {IMAGES_DIR}/256bit  XTS_AES_128_KEY --no-read-protect --show-token",  # noqa: E501
+                id="esp32c2",
+                marks=pytest.mark.skipif(arg_chip != "esp32c2", reason="esp32c2-only"),
+            ),
+            pytest.param(
+                "EFSW:esp32c3:004:AAGAAAEAAAAAAAAEAAAAAAAAAAAAAAAA::AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA::v769vLu6ubi3trW0s7KxsK-urayrqqmop6alpKOioaA::::::::n9AtsQ",  # noqa: E501
+                "EFSR:esp32c3:004:AAGAAAEAAAAAAAAEAAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAA:AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA::::::::::epNVBg",  # noqa: E501
+                f"burn-efuse RD_DIS 1  burn-bit BLOCK2 1  burn-key BLOCK_KEY0 {IMAGES_DIR}/256bit  XTS_AES_128_KEY --no-read-protect --show-token",  # noqa: E501
+                id="esp32c3",
+                marks=pytest.mark.skipif(arg_chip != "esp32c3", reason="esp32c3-only"),
+            ),
+        ],
+    )
+    def test_multy_burn_cmds_produce_token(self, write_token, read_token, cmd):
+        out = self.espefuse_py(cmd)
+        extracted_write_token = self._extract_token(out)
+
+        dump_out = self.espefuse_py("dump --format token")
+        extracted_read_token = self._extract_token(dump_out)
+
+        assert extracted_write_token == write_token
+        assert extracted_read_token == read_token

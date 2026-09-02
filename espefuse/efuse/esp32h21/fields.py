@@ -212,7 +212,6 @@ class EspEfuses(base_fields.EspEfusesBase):
             raise esptool.FatalError(
                 f"The eFuse supports only xtal=32M (xtal was {apb_freq}"
             )
-        # TODO: [ESP32H21] IDF-11506
 
     def get_coding_scheme_warnings(self, silent=False):
         """Check if the coding scheme has detected any errors."""
@@ -221,10 +220,7 @@ class EspEfuses(base_fields.EspEfusesBase):
         ret_fail = False
         for block in self.blocks:
             if block.id == 0:
-                words = [
-                    self.read_reg(self.REGS.EFUSE_RD_REPEAT_ERR0_REG + offs * 4)
-                    for offs in range(5)
-                ]
+                words = [self.read_reg(reg) for reg in self.REGS.BLOCK0_ERRORS]
                 block.err_bitarray.pos = 0
                 for word in reversed(words):
                     block.err_bitarray.overwrite(BitArray(f"uint:32={word}"))
@@ -281,9 +277,7 @@ class EfuseMacField(base_fields.EfuseMacFieldBase, EfuseField):
 
 
 class EfuseWafer(base_fields.EfuseWaferBase, EfuseField):
-    def get(self, from_read=True):
-        # TODO: [ESP32H21] IDF-11506
-        return 0
+    pass
 
 
 class EfuseKeyPurposeField(base_fields.EfuseKeyPurposeFieldBase, EfuseField):

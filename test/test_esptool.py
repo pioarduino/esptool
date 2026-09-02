@@ -53,7 +53,6 @@ try:
     from esptool import FatalError
     from esptool.cmds import (
         attach_flash,
-        detect_chip,
         erase_flash,
         flash_id,
         image_info,
@@ -1291,8 +1290,11 @@ class TestSecurityInfo(EsptoolTestCase):
             assert "Key Purposes" in res
         if arg_chip != "esp32s2":
             try:
-                esp = esptool.get_default_connected_device(
-                    [arg_port], arg_port, 10, 115200, arg_chip
+                esp = esptool.connect_esp(
+                    port=arg_port,
+                    chip=arg_chip,
+                    initial_baud=115200,
+                    connect_attempts=10,
                 )
                 assert f"Chip ID: {esp.IMAGE_CHIP_ID}" in res
                 assert "API Version" in res
@@ -2039,8 +2041,11 @@ class TestReadWriteMemory(EsptoolTestCase):
 
     def test_read_write_memory_rom(self):
         try:
-            esp = esptool.get_default_connected_device(
-                [arg_port], arg_port, 10, 115200, arg_chip
+            esp = esptool.connect_esp(
+                port=arg_port,
+                chip=arg_chip,
+                initial_baud=115200,
+                connect_attempts=10,
             )
             self._test_read_write(esp)
         finally:
@@ -2048,8 +2053,11 @@ class TestReadWriteMemory(EsptoolTestCase):
 
     def test_read_write_memory_stub(self):
         try:
-            esp = esptool.get_default_connected_device(
-                [arg_port], arg_port, 10, 115200, arg_chip
+            esp = esptool.connect_esp(
+                port=arg_port,
+                chip=arg_chip,
+                initial_baud=115200,
+                connect_attempts=10,
             )
             esp = esp.run_stub()
             self._test_read_write(esp)
@@ -2071,8 +2079,11 @@ class TestReadWriteMemory(EsptoolTestCase):
 
     def test_read_chip_description(self):
         try:
-            esp = esptool.get_default_connected_device(
-                [arg_port], arg_port, 10, 115200, arg_chip
+            esp = esptool.connect_esp(
+                port=arg_port,
+                chip=arg_chip,
+                initial_baud=115200,
+                connect_attempts=10,
             )
             chip = esp.get_chip_description()
             assert "unknown" not in chip.lower()
@@ -2081,8 +2092,11 @@ class TestReadWriteMemory(EsptoolTestCase):
 
     def test_read_get_chip_features(self):
         try:
-            esp = esptool.get_default_connected_device(
-                [arg_port], arg_port, 10, 115200, arg_chip
+            esp = esptool.connect_esp(
+                port=arg_port,
+                chip=arg_chip,
+                initial_baud=115200,
+                connect_attempts=10,
             )
 
             if hasattr(esp, "get_flash_cap") and esp.get_flash_cap() == 0:
@@ -2158,7 +2172,7 @@ class TestConfigFile(EsptoolTestCase):
         with self.ConfigFile(config_file_path, self.dummy_config):
             output = self.run_esptool("version")
             assert f"Loaded custom configuration from {config_file_path}" in output
-            assert "Ignoring unknown config file option" not in output
+            assert "Ignoring unknown config option" not in output
             assert "Ignoring invalid config file" not in output
 
         # Test invalid files are ignored
@@ -2177,11 +2191,11 @@ class TestConfigFile(EsptoolTestCase):
                 in output
             )
 
-        # Correct header, unknown option (or a typo)
+        # Correct header, unknown option (or a typo).
         faulty_config = "[esptool]\nconnect_attempts = 9\ntimoout = 2\nbits = 2"
         with self.ConfigFile(config_file_path, faulty_config):
             output = self.run_esptool("version")
-            assert "Ignoring unknown config file options: bits, timoout" in output
+            assert "Ignoring unknown config options: bits, timoout" in output
 
         # Test other config files (setup.cfg, tox.ini) are loaded
         config_file_path = os.path.join(os.getcwd(), "tox.ini")
@@ -2302,8 +2316,7 @@ class TestESPObjectOperations(EsptoolTestCase):
     @pytest.mark.quick_test
     @capture_stdout
     def test_stub_run(self, fake_out):
-        with esptool.CHIP_DEFS[arg_chip](port=arg_port) as esp:
-            esp.connect()
+        with esptool.connect_esp(port=arg_port, chip=arg_chip) as esp:
             esp = esp.run_stub()
             read_mac(esp)
             reset_chip(esp, "hard-reset")
@@ -2313,7 +2326,7 @@ class TestESPObjectOperations(EsptoolTestCase):
 
     @capture_stdout
     def test_flash_operations(self, fake_out):
-        with detect_chip(port=arg_port) as esp:  # Test with chip autodetection
+        with esptool.connect_esp(port=arg_port) as esp:  # Test with chip autodetection
             esp = esp.run_stub()
             try:
                 attach_flash(esp)
@@ -2378,7 +2391,7 @@ class TestESPObjectOperations(EsptoolTestCase):
 
             addr = 0x10000
             # Use API directly to flash old file first
-            with detect_chip(port=arg_port) as esp:
+            with esptool.connect_esp(port=arg_port) as esp:
                 esp = esp.run_stub()
                 try:
                     attach_flash(esp)
@@ -2404,7 +2417,7 @@ class TestESPObjectOperations(EsptoolTestCase):
                     reset_chip(esp, "hard-reset")
 
             # Test with no_diff_verify=True
-            with detect_chip(port=arg_port) as esp:
+            with esptool.connect_esp(port=arg_port) as esp:
                 esp = esp.run_stub()
                 try:
                     attach_flash(esp)
@@ -2432,32 +2445,68 @@ class TestESPObjectOperations(EsptoolTestCase):
             os.unlink(old_bin.name)
             os.unlink(new_bin.name)
 
+    @pytest.mark.quick_test
+    @capture_stdout
+    def test_connect_esp_change_baud(self, fake_out):
+        # connect_esp() opens the port at the ROM sync rate; the documented
+        # follow-up is to run the stub and then esp.change_baud() to raise the
+        # operational rate (ESP8266 ROM can't change baud, only the stub can).
+        with esptool.connect_esp(port=arg_port, chip=arg_chip) as esp:
+            esp = esp.run_stub()
+            esp.change_baud(460800)
+            assert esp.get_baud() == 460800
+            read_mac(esp)  # Confirm the link still works at the new rate
+            reset_chip(esp, "hard-reset")
+        output = fake_out.getvalue()
+        assert "Changing baud rate to 460800" in output
+        assert "MAC:" in output
+
 
 @pytest.mark.host_test
 class TestOldScripts:
+    def _run_old_script_help(self, script: str) -> str:
+        output = subprocess.check_output([script, "-h"], stderr=subprocess.STDOUT)
+        return output.decode("utf-8")
+
     def test_esptool_py(self):
-        output = subprocess.check_output(["esptool.py", "-h"])
-        decoded = output.decode("utf-8")
-        assert "esptool.py" in decoded
-        assert "DEPRECATED" in decoded
+        output = self._run_old_script_help("esptool.py")
+        assert "esptool.py" in output
+        assert "DEPRECATED" in output
 
     def test_espefuse_py(self):
-        output = subprocess.check_output(["espefuse.py", "-h"])
-        decoded = output.decode("utf-8")
-        assert "espefuse.py" in decoded
-        assert "DEPRECATED" in decoded
+        output = self._run_old_script_help("espefuse.py")
+        assert "espefuse.py" in output
+        assert "DEPRECATED" in output
 
     def test_espsecure_py(self):
-        output = subprocess.check_output(["espsecure.py", "-h"])
-        decoded = output.decode("utf-8")
-        assert "espsecure.py" in decoded
-        assert "DEPRECATED" in decoded
+        output = self._run_old_script_help("espsecure.py")
+        assert "espsecure.py" in output
+        assert "DEPRECATED" in output
 
     def test_esp_rfc2217_server_py(self):
-        output = subprocess.check_output(["esp_rfc2217_server.py", "-h"])
-        decoded = output.decode("utf-8")
-        assert "esp_rfc2217_server.py" in decoded
-        assert "DEPRECATED" in decoded
+        output = self._run_old_script_help("esp_rfc2217_server.py")
+        assert "esp_rfc2217_server.py" in output
+        assert "DEPRECATED" in output
+
+
+@pytest.mark.host_test
+class TestDeprecatedAliases:
+    """The deprecated aliases must keep forwarding to their replacements so
+    downstream scripts don't break (no hardware required)."""
+
+    def test_connect_loop_forwards_to_connect_with_retries(self):
+        sentinel = object()
+        with patch("esptool.connect_with_retries", return_value=sentinel) as mocked:
+            result = esptool.connect_loop("port", 1, "esp32", 2, trace=True)
+        mocked.assert_called_once_with("port", 1, "esp32", 2, trace=True)
+        assert result is sentinel
+
+    def test_get_default_connected_device_forwards_to_connect_first_available(self):
+        sentinel = object()
+        with patch("esptool.connect_first_available", return_value=sentinel) as mocked:
+            result = esptool.get_default_connected_device(["port"], None, 2, 115200)
+        mocked.assert_called_once_with(["port"], None, 2, 115200)
+        assert result is sentinel
 
 
 @pytest.mark.host_test
@@ -2468,7 +2517,7 @@ class TestPortFilter(EsptoolTestCase):
             "--port-filter name=NonExistentChip flash-id", port=None
         )
         # The command should fail due to no device found, not due to parsing error
-        assert "Option --port-filter argument key not recognized" not in output
+        assert "Unknown port filter key" not in output
         # Should fail with device connection error instead
         assert "Found 0 serial ports..." in output
 
@@ -2477,12 +2526,12 @@ class TestPortFilter(EsptoolTestCase):
         output = self.run_esptool_error(
             "--port-filter invalidkey=123 flash-id", port=None
         )
-        assert "Option --port-filter argument key not recognized" in output
+        assert "Unknown port filter key" in output
 
     def test_port_filter_missing_equal_sign(self):
         """Test CLI with missing equal sign in --port-filter option"""
         output = self.run_esptool_error("--port-filter name123 flash-id", port=None)
-        assert "Option --port-filter argument must consist of key=value." in output
+        assert "Expected key=value" in output
 
 
 @pytest.mark.host_test

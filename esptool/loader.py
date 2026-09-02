@@ -14,6 +14,12 @@ import struct
 import sys
 import time
 
+from esp_pylib.constants import ESP_ROM_BAUD, ESPRESSIF_VID, USB_JTAG_SERIAL_PID
+from esp_pylib.errors import PortVidPidNotFoundError
+from esp_pylib.serial_ports import get_port_vid_pid
+from esp_pylib.serial_reset import uses_hardware_flow_control
+from rich.markup import escape
+
 from .config import load_config_file
 from .logger import log
 from .reset import (
@@ -42,8 +48,8 @@ from .util import (
 try:
     import serial
 except ImportError:
-    log.error(
-        f"PySerial is not installed for {sys.executable}. "
+    log.err(
+        f"PySerial is not installed for {escape(sys.executable)}. "
         "Check the documentation for installation instructions."
     )
     raise
@@ -67,22 +73,16 @@ except TypeError:
     pass  # __doc__ returns None for pySerial
 
 try:
-    import serial.tools.list_ports as list_ports
+    # Re-exported for backward compatibility: ``esptool.cli_util`` imports
+    # ``ListPortInfo`` from here, and external tooling has done the same.
     from serial.tools.list_ports_common import ListPortInfo  # noqa: F401
 except ImportError:
-    log.error(
+    log.err(
         f"The installed version ({serial.VERSION}) of pySerial appears to be too old "
-        f"for esptool (Python interpreter {sys.executable}). "
+        f"for esptool (Python interpreter {escape(sys.executable)}). "
         "Check the documentation for installation instructions."
     )
     raise
-except Exception:
-    if sys.platform == "darwin":
-        # swallow the exception, this is a known issue in pySerial+macOS Big Sur preview
-        # ref https://github.com/espressif/esptool/issues/540
-        list_ports = None
-    else:
-        raise
 
 
 cfg, _ = load_config_file()
@@ -99,11 +99,16 @@ SYNC_TIMEOUT = cfg.getfloat("sync_timeout", 0.1)
 # Timeout (per megabyte) for calculating md5sum
 MD5_TIMEOUT_PER_MB = cfg.getfloat("md5_timeout_per_mb", 8)
 # Timeout (per megabyte) for erasing a region
-ERASE_REGION_TIMEOUT_PER_MB = cfg.getfloat("erase_region_timeout_per_mb", 30)
+ERASE_REGION_TIMEOUT_PER_MB = cfg.getfloat("erase_region_timeout_per_mb", 40)
 # Timeout (per megabyte) for erasing and writing data
 ERASE_WRITE_TIMEOUT_PER_MB = cfg.getfloat("erase_write_timeout_per_mb", 40)
 # Short timeout for MEM_END, as it may never respond
 MEM_END_ROM_TIMEOUT = cfg.getfloat("mem_end_rom_timeout", 0.2)
+# Secure Debug Controller (SDC) chip_info: the ROM computes a 32-byte value but
+# the SDC_GEN_END response payload is 64 bytes (32 bytes chip_info + 32 bytes of
+# zero padding); the status bytes follow the whole payload.
+SDC_CHIP_INFO_LEN = 32
+SDC_GEN_END_RESP_LEN = 64
 # Timeout for serial port write
 DEFAULT_SERIAL_WRITE_TIMEOUT = cfg.getfloat("serial_write_timeout", 10)
 # Default number of times to try connection
@@ -237,7 +242,7 @@ class StubFlasher:
             json_path = os.path.join(self.STUB_DIR, subdir, json_name)
             if os.path.exists(json_path):
                 if i and self.STUB_VERSION_EXPLICIT:
-                    log.warning(
+                    log.warn(
                         f"{chip_name} stub version {self.STUB_SUBDIRS[0]} doesn't "
                         f"exist, using {subdir} instead."
                     )
@@ -314,6 +319,13 @@ class ESPLoader:
         "SPI_FLASH_MD5": 0x13,
         # Commands supported by ESP32-S2 and later chips ROM bootloader only
         "GET_SECURITY_INFO": 0x14,
+        # Commands supported by Secure Download Controller
+        "SDC_VERIF_BEGIN": 0x19,
+        "SDC_VERIF_DATA": 0x1A,
+        "SDC_VERIF_END": 0x1B,
+        "SDC_GEN_BEGIN": 0x1C,
+        "SDC_GEN_DATA": 0x1D,
+        "SDC_GEN_END": 0x1E,
         # Some commands supported by stub only
         "ERASE_FLASH": 0xD0,
         "ERASE_REGION": 0xD1,
@@ -344,7 +356,8 @@ class ESPLoader:
     FLASH_WRITE_SIZE = 0x400
 
     # Default baudrate. The ROM auto-bauds, so we can use more or less whatever we want.
-    ESP_ROM_BAUD = 115200
+    # Alias from esp-pylib for backward compatibility.
+    ESP_ROM_BAUD = ESP_ROM_BAUD
 
     # First byte of the application image
     ESP_IMAGE_MAGIC = 0xE9
@@ -377,13 +390,10 @@ class ESPLoader:
     # instead of the ROM bootloader
     sync_stub_detected = False
 
-    # Device VIDs, PIDs
-    ESPRESSIF_VID = 0x303A
+    # Device VIDs, PIDs — sourced from esp-pylib and aliased for backward compatibility
+    ESPRESSIF_VID = ESPRESSIF_VID
 
-    USB_JTAG_SERIAL_PID = 0x1001
-    HARDWARE_FLOW_CONTROL_VID_PIDS = [
-        (0x10C4, 0xEA64),  # SiLabs CP2102C USB to UART Bridge Controller
-    ]
+    USB_JTAG_SERIAL_PID = USB_JTAG_SERIAL_PID
 
     # Chip IDs that are no longer supported by esptool
     UNSUPPORTED_CHIPS = {
@@ -506,6 +516,10 @@ class ESPLoader:
                 f"Failed to set baud rate {baud}. The driver may not support this rate."
             )
 
+    def get_baud(self):
+        """Return the current serial port baud rate."""
+        return self._port.baudrate
+
     def read(self):
         """Read a SLIP packet from the serial port"""
         try:
@@ -542,7 +556,9 @@ class ESPLoader:
                 delta = 0.0
             self._last_trace = now
             prefix = f" TRACE +{delta:.3f}  "
-            log.print("\n" if newline else "", f"{prefix} {message}")
+            # Tracing is gated per-loader by ``trace_enabled``, independent of
+            # the global verbosity, so use ``print`` (dim) rather log.debug.
+            log.print("\n" if newline else "", f"{prefix} {message}", style="dim")
 
     @staticmethod
     def checksum(data, state=ESP_CHECKSUM_MAGIC):
@@ -569,7 +585,8 @@ class ESPLoader:
         try:
             if op is not None:
                 self.trace(
-                    f"--- Cmd {get_key_from_value(self.ESP_CMDS, op)} ({op:#04x}) | "
+                    f"--- Cmd [not dim blue]{get_key_from_value(self.ESP_CMDS, op)}"
+                    f"[/not dim blue] ({op:#04x}) | "
                     f"data_len {len(data)} | wait_response {1 if wait_response else 0}"
                     f" | timeout {timeout:.3f} | data {HexFormatter(data)} ---",
                     newline=True,
@@ -705,54 +722,28 @@ class ESPLoader:
             self.sync_stub_detected &= val == 0
 
     def get_usb_vid_pid(self):
+        """Return ``(vid, pid)`` for the connected port, or ``(None, None)``.
+
+        Wraps `esp_pylib.serial_ports.get_port_vid_pid` and folds its
+        `PortVidPidNotFoundError` into a `(None, None)` return so
+        the historical contract is preserved: the caller falls back to the
+        standard reset sequence, rather than aborting.
+        """
         if self.cache["usb_vid"] is not None and self.cache["usb_pid"] is not None:
             return self.cache["usb_vid"], self.cache["usb_pid"]
 
-        if list_ports is None:
-            log.print(
-                "\nListing all serial ports is currently not available. "
-                "Can't get device VID/PID."
-            )
-            return None, None
         active_port = self._port.port
-
-        # Pyserial only identifies regular ports, URL handlers are not supported
-        if not active_port.lower().startswith("com") and not os.path.isabs(active_port):
+        try:
+            vid, pid = get_port_vid_pid(active_port)
+        except PortVidPidNotFoundError as exc:
             log.print(
-                "\nDevice VID/PID identification is only supported on "
-                "COM and absolute device paths."
+                f"\nFailed to get VID/PID of a device on {escape(str(active_port))}: "
+                f"{escape(str(exc))} Using standard reset sequence."
             )
             return None, None
-        active_ports = [active_port]
-
-        # Prefer the real path if the active port is a symlink, but keep the
-        # original name as a fallback for environments where pyserial lists it.
-        if os.path.islink(active_port):
-            resolved_port = os.path.realpath(active_port)
-            if os.path.exists(resolved_port) and resolved_port != active_port:
-                active_ports.insert(0, resolved_port)
-
-        # The "cu" (call-up) device has to be used for outgoing communication on MacOS
-        if sys.platform == "darwin":
-            active_ports += [p.replace("tty", "cu") for p in active_ports if "tty" in p]
-        ports = list_ports.comports()
-        found_without_ids = False
-        for lookup_port in active_ports:
-            for p in ports:
-                if p.device != lookup_port:
-                    continue
-                if p.vid is not None and p.pid is not None:
-                    self.cache["usb_vid"] = p.vid
-                    self.cache["usb_pid"] = p.pid
-                    return p.vid, p.pid
-                found_without_ids = True
-        if found_without_ids:
-            return None, None
-        log.print(
-            f"\nFailed to get VID/PID of a device on {active_port}, "
-            "using standard reset sequence."
-        )
-        return None, None
+        self.cache["usb_vid"] = vid
+        self.cache["usb_pid"] = pid
+        return vid, pid
 
     def _connect_attempt(self, reset_strategy, mode="default-reset"):
         """A single connection attempt"""
@@ -790,7 +781,7 @@ class ESPLoader:
                 self.sync()
                 return None
             except FatalError as e:
-                log.print(".", end="", flush=True)
+                log.print(".", end="")
                 time.sleep(0.05)
                 last_error = e
 
@@ -846,7 +837,7 @@ class ESPLoader:
         if mode == "usb-reset" or self.get_usb_vid_pid()[1] == self.USB_JTAG_SERIAL_PID:
             return (USBJTAGSerialReset(self._port),)
 
-        flow_control = self.uses_hardware_flow_control()
+        flow_control = uses_hardware_flow_control(self.get_usb_vid_pid())
 
         # USB-to-Serial bridge
         if os.name != "nt" and not self._port.name.startswith("rfc2217:"):
@@ -885,7 +876,7 @@ class ESPLoader:
                 "reset the chip manually."
             )
 
-        log.print("Connecting...", end="", flush=True)
+        log.print("Connecting...", end="")
         last_error = None
 
         reset_sequence = self._construct_reset_strategy_sequence(mode)
@@ -977,7 +968,7 @@ class ESPLoader:
                         if chip_id
                         else f"(read chip magic value {chip_magic_value:#08x})"
                     )
-                    log.warning(
+                    log.warn(
                         f"This chip doesn't appear to be an {self.CHIP_NAME} "
                         f"{specifier}. Probably it is unsupported by this version "
                         "of esptool. Will attempt to continue anyway."
@@ -1033,6 +1024,83 @@ class ESPLoader:
         self.write_reg(addr, val)
 
         return val
+
+    def sdc_verify_begin(self, ena_nonce, size):
+        return self.check_command(
+            "begin SDC certificate verification",
+            self.ESP_CMDS["SDC_VERIF_BEGIN"],
+            struct.pack("<II", ena_nonce, size),
+            timeout=DEFAULT_TIMEOUT,
+        )
+
+    def sdc_verify_data(self, data):
+        return self.check_command(
+            "write SDC certificate data",
+            self.ESP_CMDS["SDC_VERIF_DATA"],
+            struct.pack("<I", len(data)) + data,
+            self.checksum(data),
+            timeout=DEFAULT_TIMEOUT,
+        )
+
+    def sdc_verify_end(self):
+        # The status byte of this response carries the certificate verification
+        # result (0 = valid, non-zero = rejected by the ROM), so let
+        # check_command raise on a non-zero result instead of ignoring it.
+        data = struct.pack("<I", False)
+        return self.check_command(
+            "verify the SDC certificate",
+            self.ESP_CMDS["SDC_VERIF_END"],
+            data=data,
+            timeout=DEFAULT_TIMEOUT,
+        )
+
+    def sdc_gen_begin(self):
+        data = struct.pack("<I", True)
+        try:
+            return self.check_command(
+                "start SDC generation",
+                self.ESP_CMDS["SDC_GEN_BEGIN"],
+                data=data,
+                timeout=DEFAULT_TIMEOUT,
+            )
+        except FatalError:
+            if self.IS_STUB:
+                raise
+            pass
+
+    def sdc_gen_data(self, data):
+        data1 = struct.pack("<I", len(data)) + data
+        try:
+            return self.check_command(
+                "write SDC generation data",
+                self.ESP_CMDS["SDC_GEN_DATA"],
+                data1,
+                self.checksum(data),
+                timeout=DEFAULT_TIMEOUT,
+            )
+        except FatalError:
+            if self.IS_STUB:
+                raise
+            pass
+
+    def sdc_gen_end(self):
+        data = struct.pack("<I", True)
+        try:
+            r = self.check_command(
+                "finish SDC generation",
+                self.ESP_CMDS["SDC_GEN_END"],
+                data=data,
+                # The ROM returns a 64-byte payload (32 bytes chip_info + 32
+                # bytes zero padding); the status bytes follow it, so the whole
+                # payload length must be declared here or the status would be
+                # read from the zero padding instead.
+                resp_data_len=SDC_GEN_END_RESP_LEN,
+                timeout=DEFAULT_TIMEOUT,
+            )
+        except FatalError:
+            log.error("Error when read chip_info")
+            raise
+        return r[:SDC_CHIP_INFO_LEN] if r else None
 
     def mem_begin(self, size, blocks, blocksize, offset):
         """Start downloading an application image to RAM"""
@@ -1274,14 +1342,6 @@ class ESPLoader:
         True if the host sees this port as Espressif USB-OTG (VID/PID match).
         """
         return self.get_usb_vid_pid() == (self.ESPRESSIF_VID, self.IMAGE_CHIP_ID)
-
-    def uses_hardware_flow_control(self):
-        """
-        True if this port uses hardware flow control that esptool needs to know
-        about for resetting. This is determined by checking if the USB PID matches
-        known PIDs with hardware flow control.
-        """
-        return self.get_usb_vid_pid() in self.HARDWARE_FLOW_CONTROL_VID_PIDS
 
     def get_usb_mode(self):
         """
@@ -1789,7 +1849,7 @@ class ESPLoader:
             f"mfr={mfr_id:#04x} dev={dev_id:#06x}, prot={prot_reg:#04x}"
         )
         if prot_reg != 0x00:
-            log.warning(
+            log.warn(
                 f"NAND protection register is {prot_reg:#04x} (expected 0x00); "
                 "program/erase may not persist."
             )
@@ -2075,7 +2135,7 @@ class ESPLoader:
         else:
             norm_xtal = 26
         if abs(norm_xtal - est_xtal) > 1:
-            log.warning(
+            log.warn(
                 f"Detected crystal freq {est_xtal:.2f} MHz is quite different to "
                 f"normalized freq {norm_xtal} MHz. Unsupported crystal in use?"
             )
@@ -2089,7 +2149,9 @@ class ESPLoader:
             CustomReset(self._port, cfg_custom_hard_reset_sequence)()
         else:
             HardReset(
-                self._port, uses_usb, flow_control=self.uses_hardware_flow_control()
+                self._port,
+                uses_usb,
+                flow_control=uses_hardware_flow_control(self.get_usb_vid_pid()),
             )()
 
     def soft_reset(self, stay_in_bootloader):
@@ -2288,7 +2350,7 @@ class HexFormatter:
                 s = s[16:]
                 result += (
                     f"\n    {hexify(line[:8], False):<16s} "
-                    f"{hexify(line[8:], False):<16s} | {ascii_line}"
+                    f"{hexify(line[8:], False):<16s} | {escape(ascii_line)}"
                 )
             return result
         else:

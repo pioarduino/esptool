@@ -1,4 +1,4 @@
-{IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000"}
+{IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000", esp32s31="0x2000"}
 
 .. _troubleshooting:
 
@@ -27,6 +27,13 @@ Writing to Flash Fails Part Way Through
 If flashing fails with random errors part way through, retry with a lower baud rate.
 
 Power stability problems may also cause this (see `Insufficient Power`_.)
+
+Slow Flashing with a Merged Binary
+----------------------------------
+
+If flashing a file created with :ref:`merge-bin <merge-bin>` is slow, or erases flash between the original images, the file was probably created in the default raw format. Raw format pads gaps with ``0xFF``, so those padding bytes are sent over the serial link and written to flash. That slows flashing and erases the sectors in between.
+
+Re-run ``merge-bin`` on the original input files with ``--format hex`` (do not convert an already merged raw binary), or flash the original files individually.
 
 Writing to Flash Succeeds but Program Doesn't Run
 -------------------------------------------------
@@ -274,7 +281,7 @@ esptool has the following limitations when working with external flash and memor
 - Accessing flash chip areas beyond 16MB (32-bit addressing) is supported only if **all** of the following conditions are met:
 
    - The :ref:`flasher stub <stub>` is used, as the ROM bootloader does not support 32-bit addressing.
-   - The target chip is ESP32-S3, ESP32-C5, or ESP32-P4.
+   - The target chip is ESP32-S3, ESP32-C5, ESP32-P4, ESP32-C61, or ESP32-S31.
    - The flash chip is one of the following supported models:
 
       - W25Q256
@@ -315,12 +322,14 @@ When Secure Download Mode is enabled, the available serial protocol commands are
 
    See the :ref:`supported-in-sdm` section for more details.
 
-Secure Boot Limitations
-^^^^^^^^^^^^^^^^^^^^^^^
+.. only:: esp32c3
 
-- The :ref:`flasher stub <stub>` cannot currently be used on ESP32-C3 when Secure Boot is enabled.
+   Secure Boot Limitations
+   ^^^^^^^^^^^^^^^^^^^^^^^
 
-   - This is due to a bug in the ROM bootloader that prevents custom code loaded into RAM from being executed.
+   - The :ref:`flasher stub <stub>` cannot currently be used on ESP32-C3 when Secure Boot is enabled.
+
+      - This is due to a bug in the ROM bootloader that prevents custom code loaded into RAM from being executed.
 
 .. _wdt-reset-limitations:
 

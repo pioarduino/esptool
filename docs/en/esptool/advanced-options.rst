@@ -22,7 +22,7 @@ The ``--before`` argument allows you to specify whether the chip needs resetting
     * ``--before default-reset`` is the default, which uses DTR & RTS serial control lines (see :ref:`entering-the-bootloader`) to try to reset the chip into bootloader mode.
     * ``--before no-reset`` will skip DTR/RTS control signal assignments and just start sending a serial synchronisation command to the chip. This is useful if your chip doesn't have DTR/RTS, or for some serial interfaces (like Arduino board onboard serial) which behave differently when DTR/RTS are toggled.
     * ``--before no-reset-no-sync`` will skip DTR/RTS control signal assignments and skip also the serial synchronization command. This is useful if your chip is already running the :ref:`stub bootloader <stub>` and you want to avoid resetting the chip and uploading the stub again.
-    :esp32c3 or esp32s3 or esp32c6 or esp32h2 or esp32p4 or esp32c5 or esp32c61 or esp32h21 or esp32h4: * ``--before usb-reset`` will use custom reset sequence for USB-JTAG-Serial (used for example for ESP chips connected through the USB-JTAG-Serial peripheral). Usually, this option doesn't have to be used directly. Esptool should be able to detect connection through USB-JTAG-Serial.
+    :esp32c3 or esp32s3 or esp32c6 or esp32h2 or esp32p4 or esp32c5 or esp32c61 or esp32h21 or esp32h4 or esp32s31: * ``--before usb-reset`` will use custom reset sequence for USB-JTAG-Serial (used for example for ESP chips connected through the USB-JTAG-Serial peripheral). Usually, this option doesn't have to be used directly. Esptool should be able to detect connection through USB-JTAG-Serial.
 
 .. _after-reset:
 
@@ -165,12 +165,12 @@ at least one FilterValue for each specified FilterType to be considered. Example
 
 See also the `Espressif USB customer-allocated PID repository <https://github.com/espressif/usb-pids>`_
 
-Output Verbosity
-----------------
+Output and CLI Appearance
+-------------------------
 
 Output verbosity can be controlled using the ``--verbose`` and ``--silent`` flags.
 
-Verbose output: ``--verbose``, ``-v``
+Verbose Output: ``--verbose``, ``-v``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. _verbose:
 
@@ -182,7 +182,7 @@ The ``--verbose``, ``-v`` flag can be used to show all output without any overwr
 
 See :ref:`the trace option <tracing-communications>` if you want to dump all serial interactions to the standard output for debugging purposes.
 
-Silent output: ``--silent``, ``-s``
+Silent Output: ``--silent``, ``-s``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. _silent:
 
@@ -191,3 +191,41 @@ The ``--silent``, ``-s`` flag can be used to limit the output to errors only:
 .. code-block:: bash
 
     esptool -s write-flash 0x0 image.bin
+
+.. _disabling_color_output:
+
+Disabling Color Output
+^^^^^^^^^^^^^^^^^^^^^^
+
+Esptool may emit ANSI color codes in terminal output (for example, errors in red).
+If this causes problems when redirecting output or parsing logs, set the ``NO_COLOR``
+environment variable before running esptool:
+
+.. code-block:: bash
+
+    NO_COLOR=1 esptool flash-id
+
+Any non-empty value disables color output. This follows the `NO_COLOR <https://no-color.org/>`__
+convention and applies to ``esptool``, ``espefuse``, ``espsecure`` and ``esp_rfc2217_server``.
+
+CLI Help Themes
+^^^^^^^^^^^^^^^
+
+If the default ``--help`` styling is hard to read in your terminal (for example on
+a light or non-standard background), you can choose a different theme with the
+``RICH_CLICK_THEME`` environment variable:
+
+.. code-block:: bash
+
+    RICH_CLICK_THEME=solarized-slim esptool -h
+
+To keep the setting for the rest of the shell session, export it instead:
+
+.. code-block:: bash
+
+    export RICH_CLICK_THEME=solarized-slim
+
+See the `rich-click themes documentation
+<https://ewels.github.io/rich-click/latest/documentation/themes/>`__ for available
+themes and further options. ``RICH_CLICK_THEME`` customizes ``--help`` styling only;
+to disable colors in all terminal output (including help), use ``NO_COLOR`` instead.

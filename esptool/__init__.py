@@ -5,6 +5,9 @@
 
 __all__ = [
     "chip_id",
+    "connect_esp",
+    "connect_first_available",
+    "connect_with_retries",
     "detect_chip",
     "dump_mem",
     "elf2image",
@@ -15,6 +18,8 @@ __all__ = [
     "get_security_info",
     "image_info",
     "load_ram",
+    "verify_sdc_certificate",
+    "read_sdc_chip_info",
     "merge_bin",
     "read_flash",
     "read_flash_status",
@@ -33,43 +38,42 @@ __all__ = [
     "write_nand_spare",
 ]
 
-__version__ = "5.3.1"
+__version__ = "5.4.0"
 
 import os
 import shlex
 import sys
-import time
 import traceback
 import typing as t
-from itertools import chain, cycle, repeat
 
 import rich_click as click
 import serial
+from esp_pylib.cli_options import MutuallyExclusiveOption, OptionEatAll
+from esp_pylib.cli_types import AnyIntType, AutoSizeType, BaudRateType, SerialPortType
+from esp_pylib.excepthook import install_exception_reporting
+from esp_pylib.logger import EspLog
+from esp_pylib.serial_ports import get_port_names, parse_port_filters
+from rich.markup import escape
 
 from esptool.cli_util import (
     AddrFilenameArg,
     AddrFilenamePairType,
-    AnyIntType,
     AutoChunkSizeType,
     AutoHex2BinType,
-    AutoSizeType,
-    BaudRateType,
     ChipType,
     DiffWithType,
-    Group,
-    MutuallyExclusiveOption,
-    OptionEatAll,
+    EsptoolGroup,
     ResetModeType,
-    SerialPortType,
     SpiConnectionType,
-    get_port_list,
-    parse_port_filters,
     parse_size_arg,
 )
 from esptool.cmds import (
     NAND_BLOCK_COUNT,
     attach_flash,
     chip_id,
+    connect_esp,
+    connect_first_available,
+    connect_with_retries,
     detect_chip,
     detect_flash_size,
     dump_bbm,
@@ -88,10 +92,12 @@ from esptool.cmds import (
     read_mac,
     read_mem,
     read_nand_spare,
+    read_sdc_chip_info,
     reset_chip,
     run,
     run_stub,
     verify_flash,
+    verify_sdc_certificate,
     version,
     write_flash,
     write_flash_status,
@@ -109,11 +115,20 @@ from esptool.loader import (
 from esptool.logger import log
 from esptool.targets import CHIP_DEFS, CHIP_LIST, ESP32ROM
 from esptool.util import (
+    SDC_SUPPORTED_CHIPS,
     FatalError,
     NotImplementedInROMError,
     check_deprecated_py_suffix,
     flash_size_bytes,
 )
+
+# Backward compatibility for ESP-IDF
+get_port_list = get_port_names
+
+# Secure Debug Controller (SDC) device-side commands. These talk to the ROM
+# bootloader only (require --no-stub), are supported only on ESP32-S31, and skip
+# chip-info reading, baud-rate change, and post-run reset.
+SDC_COMMANDS = ("verify-sdc-certificate", "read-sdc-chip-info")
 
 # Show arguments in the help output, this was default in argparse
 click.rich_click.SHOW_ARGUMENTS = True
@@ -179,6 +194,8 @@ click.rich_click.COMMAND_GROUPS = {
                 "write-flash-status",
                 "read-flash-sfdp",
                 "get-security-info",
+                "verify-sdc-certificate",
+                "read-sdc-chip-info",
                 "chip-id",
                 "run",
             ],
@@ -332,7 +349,9 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
     if (
         not (
             esp.IS_STUB
-            and esp.CHIP_NAME in ["ESP32-S3", "ESP32-P4", "ESP32-C5", "ESP32-C61"]
+            # keep this in sync with docs - troubleshooting.rst
+            and esp.CHIP_NAME
+            in ["ESP32-S3", "ESP32-P4", "ESP32-C5", "ESP32-C61", "ESP32-S31"]
         )
         and address + size > 0x1000000
     ):
@@ -359,7 +378,7 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
 
 
 @click.group(
-    cls=Group,
+    cls=EsptoolGroup,
     no_args_is_help=True,
     context_settings=dict(help_option_names=["-h", "--help"], max_content_width=120),
     help=f"esptool v{__version__} - serial utility for flashing, provisioning, "
@@ -495,11 +514,23 @@ def prepare_esp_object(ctx):
     # 1) Get the ESP object
     #######################
 
-    # Disable output stage collapsing, colors, and overwriting in trace mode
+    # Disable output stage collapsing, colors, and overwriting in trace mode.
+    # Must touch ``EspLog.instance`` (what the ``log`` proxy reads), not
+    # ``EsptoolLogger()`` — the subclass ctor cache can diverge after
+    # ``set_logger`` or test harness resets.
     if ctx.obj["trace"]:
-        log._smart_features = False
+        inst = EspLog.instance
+        if inst is not None and hasattr(inst, "_smart_features"):
+            inst._smart_features = False
+        log.set_verbosity("verbose")
 
-    log.stage()
+    open_port_attempts = os.environ.get(
+        "ESPTOOL_OPEN_PORT_ATTEMPTS", DEFAULT_OPEN_PORT_ATTEMPTS
+    )
+    try:
+        open_port_attempts = int(open_port_attempts)
+    except ValueError:
+        raise FatalError("Invalid value for ESPTOOL_OPEN_PORT_ATTEMPTS.")
 
     if ctx.obj["before"] != "no-reset-no-sync":
         initial_baud = min(
@@ -508,61 +539,35 @@ def prepare_esp_object(ctx):
     else:
         initial_baud = ctx.obj["baud"]
 
-    if ctx.obj["port"] is None:
-        filters = parse_port_filters(ctx.obj["port_filter"])
-        ser_list = get_port_list(*filters)
-        log.print(f"Found {len(ser_list)} serial ports...")
-    else:
-        ser_list = [ctx.obj["port"]]
-    open_port_attempts = os.environ.get(
-        "ESPTOOL_OPEN_PORT_ATTEMPTS", DEFAULT_OPEN_PORT_ATTEMPTS
-    )
-    try:
-        open_port_attempts = int(open_port_attempts)
-    except ValueError:
-        raise SystemExit("Invalid value for ESPTOOL_OPEN_PORT_ATTEMPTS.")
-
     esp = ctx.obj.get("esp", None)
     ctx.obj["external_esp"] = esp is not None
-    if open_port_attempts != 1:
-        if ctx.obj["port"] is None or ctx.obj["chip"] == "auto":
-            log.warning(
-                "The ESPTOOL_OPEN_PORT_ATTEMPTS (open_port_attempts) option "
-                "can only be used with --port and --chip arguments."
-            )
-        else:
-            esp = esp or connect_loop(
-                ctx.obj["port"],
-                initial_baud,
-                ctx.obj["chip"],
-                open_port_attempts,
-                ctx.obj["trace"],
-                ctx.obj["before"],
-            )
-    esp = esp or get_default_connected_device(
-        ser_list,
-        port=ctx.obj["port"],
-        connect_attempts=ctx.obj["connect_attempts"],
-        initial_baud=initial_baud,
-        chip=ctx.obj["chip"],
-        trace=ctx.obj["trace"],
-        before=ctx.obj["before"],
-    )
-
-    if esp is None:
-        raise FatalError(
-            "Could not connect to an Espressif device "
-            f"on any of the {len(ser_list)} available serial ports."
+    if not ctx.obj["external_esp"]:
+        log.stage()
+        esp = connect_esp(
+            port=ctx.obj["port"],
+            chip=ctx.obj["chip"],
+            initial_baud=initial_baud,
+            port_filter=ctx.obj["port_filter"],
+            before=ctx.obj["before"],
+            trace=ctx.obj["trace"],
+            connect_attempts=ctx.obj["connect_attempts"],
+            open_port_attempts=open_port_attempts,
         )
+        log.stage(finish=True)
 
-    log.stage(finish=True)
-    log.print(f"Connected to {esp.CHIP_NAME} on {esp._port.port}:")
+    log.print(f"Connected to {esp.CHIP_NAME} on {escape(str(esp._port.port))}:")
 
     # 2) Print the chip info
     ########################
 
+    # SDC commands work with ROM bootloader and should always skip chip info reading
+    # to avoid communication issues
+    skip_chip_info = ctx.obj["invoked_subcommand"] in SDC_COMMANDS
+
     if esp.secure_download_mode:
         log.print(f"{'Chip type:':<20}{esp.CHIP_NAME} in Secure Download Mode")
+    elif skip_chip_info:
+        log.print(f"{'Chip type:':<20}{esp.CHIP_NAME}")
     else:
         log.print(f"{'Chip type:':<20}{esp.get_chip_description()}")
         log.print(f"{'Features:':<20}{', '.join(esp.get_chip_features())}")
@@ -580,10 +585,31 @@ def prepare_esp_object(ctx):
         "get-security-info",
         "write-flash",
         "erase-region",
+        *SDC_COMMANDS,
     ):
         raise FatalError(
             f"The '{ctx.obj['invoked_subcommand']}' command is not available "
             "in Secure Download Mode."
+        )
+
+    # Secure Debug Controller (SDC) is only implemented on specific chips.
+    if (
+        ctx.obj["invoked_subcommand"] in SDC_COMMANDS
+        and esp.CHIP_NAME not in SDC_SUPPORTED_CHIPS
+    ):
+        raise FatalError(
+            f"The '{ctx.obj['invoked_subcommand']}' command is only supported on "
+            f"{', '.join(SDC_SUPPORTED_CHIPS)}, but the connected chip is "
+            f"{esp.CHIP_NAME}."
+        )
+
+    # SDC commands talk to the ROM bootloader only; a locked SDC device rejects
+    # the flasher stub. Require --no-stub explicitly and guide the user if missing.
+    if ctx.obj["invoked_subcommand"] in SDC_COMMANDS and not ctx.obj["no_stub"]:
+        raise FatalError(
+            f"The '{ctx.obj['invoked_subcommand']}' command must be run with "
+            "'--no-stub'. It communicates with the ROM bootloader only and a "
+            "locked SDC device rejects the flasher stub. Re-run with '--no-stub'."
         )
 
     # 4) Upload the stub flasher
@@ -598,11 +624,17 @@ def prepare_esp_object(ctx):
     if ctx.obj["override_vddsdio"]:
         esp.override_vddsdio(ctx.obj["override_vddsdio"])
 
-    if ctx.obj["baud"] > initial_baud:
+    # SDC commands work with ROM bootloader and should skip baud rate change
+    # when using --no-stub to avoid communication issues
+    skip_baud_change = (
+        ctx.obj["no_stub"] and ctx.obj["invoked_subcommand"] in SDC_COMMANDS
+    )
+
+    if ctx.obj["baud"] > initial_baud and not skip_baud_change:
         try:
             esp.change_baud(ctx.obj["baud"])
         except NotImplementedInROMError:
-            log.warning(
+            log.warn(
                 f"ROM doesn't support changing baud rate. "
                 f"Keeping initial baud rate {initial_baud}."
             )
@@ -635,6 +667,10 @@ def prepare_esp_object(ctx):
         # Handle post-operation behaviour (reset or other)
         if ctx.obj["invoked_subcommand"] == "load-ram":
             # the ESP is now running the loaded image, so let it run
+            log.print("Exiting immediately.")
+        elif ctx.obj["invoked_subcommand"] in SDC_COMMANDS:
+            # SDC commands work with ROM bootloader and don't need reset
+            # Resetting may fail when ROM DL mode is disabled
             log.print("Exiting immediately.")
         else:
             reset_chip(esp, ctx.obj["after"])
@@ -1234,6 +1270,31 @@ def get_security_info_cli(ctx):
     get_security_info(ctx.obj["esp"])
 
 
+@cli.command("verify-sdc-certificate")
+@click.argument("filename", type=click.Path(exists=True))
+@click.pass_context
+def verify_sdc_certificate_cli(ctx, filename):
+    """Verify SDC certificate on the device for
+    Secure Debug Controller Authentication."""
+    prepare_esp_object(ctx)
+    verify_sdc_certificate(ctx.obj["esp"], filename)
+
+
+@cli.command("read-sdc-chip-info")
+@click.option(
+    "--output",
+    "-o",
+    type=str,
+    default="chip_info.bin",
+    help="Output filename for the generated chip info binary file.",
+)
+@click.pass_context
+def read_sdc_chip_info_cli(ctx, output):
+    """Generate SDC chip info on the device"""
+    prepare_esp_object(ctx)
+    read_sdc_chip_info(ctx.obj["esp"], output)
+
+
 @cli.command("version")
 def version_cli():
     """Print esptool version."""
@@ -1249,8 +1310,7 @@ def main(argv: list[str] | None = None, esp: ESPLoader | None = None):
     need to be added as individual items to the list
     e.g. "-b 115200" thus becomes ['-b', '115200'].
 
-    esp - Optional override of the connected device previously
-    returned by get_default_connected_device()
+    esp - Optional override of the connected device object.
     """
     args = expand_file_arguments(argv or sys.argv[1:])
     try:
@@ -1278,108 +1338,53 @@ def expand_file_arguments(argv: list[str]) -> list[str]:
         else:
             new_args.append(arg)
     if expanded:
-        log.print(f"esptool {' '.join(new_args)}")
+        log.print(f"esptool {escape(' '.join(new_args))}")
         return new_args
     return argv
 
 
-def connect_loop(
-    port: str,
-    initial_baud: int,
-    chip: str,
-    max_retries: int,
-    trace: bool = False,
-    before: str = "default-reset",
-):
-    chip_class = CHIP_DEFS[chip]
-    esp = None
-    log.print(f"Serial port {port}:")
-
-    first = True
-    ten_cycle = cycle(chain(repeat(False, 9), (True,)))
-    retry_loop = chain(
-        repeat(False, max_retries - 1), (True,) if max_retries else cycle((False,))
-    )
-
-    for last, every_tenth in zip(retry_loop, ten_cycle):
-        try:
-            esp = chip_class(port, initial_baud, trace)
-            if not first:
-                # break the retrying line
-                log.print("")
-            esp.connect(before)
-            return esp
-        except (FatalError, serial.serialutil.SerialException, OSError) as err:
-            if esp and esp._port:
-                esp._port.close()
-            esp = None
-            if first:
-                log.print(err)
-                log.print("Retrying failed connection", end="", flush=True)
-                first = False
-            if last:
-                raise err
-            if every_tenth:
-                # print a dot every second
-                log.print(".", end="", flush=True)
-            time.sleep(0.1)
+def connect_loop(*args, **kwargs):
+    """Deprecated alias for :func:`esptool.connect_with_retries`, kept for
+    backwards compatibility with downstream scripts. Prefer
+    :func:`esptool.connect_esp` for new code."""
+    return connect_with_retries(*args, **kwargs)
 
 
-def get_default_connected_device(
-    serial_list: list[str],
-    port: str,
-    connect_attempts: int,
-    initial_baud: int,
-    chip: str = "auto",
-    trace: bool = False,
-    before: str = "default-reset",
-):
-    _esp = None
-    for each_port in reversed(serial_list):
-        log.print(f"Serial port {each_port}:")
-        try:
-            if chip == "auto":
-                _esp = detect_chip(
-                    each_port, initial_baud, before, trace, connect_attempts
-                )
-            else:
-                chip_class = CHIP_DEFS[chip]
-                _esp = chip_class(each_port, initial_baud, trace)
-                _esp.connect(before, connect_attempts)
-            break
-        except (FatalError, OSError) as err:
-            if port is not None:
-                raise
-            log.error(f"{each_port} failed to connect: {err}")
-            if _esp and _esp._port:
-                _esp._port.close()
-            _esp = None
-    return _esp
+def get_default_connected_device(*args, **kwargs):
+    """Deprecated alias for :func:`esptool.connect_first_available`, kept for
+    backwards compatibility with downstream scripts. Prefer
+    :func:`esptool.connect_esp` for new code."""
+    return connect_first_available(*args, **kwargs)
 
 
 def _main():
+    # Chain the esp-pylib exception hook so uncaught errors are forwarded to
+    # the IDE WebSocket (when ``ESPRESSIF_IDE_WS`` is set). Safe to call
+    # multiple times — the hook chains to whatever was already installed.
+    install_exception_reporting()
     check_deprecated_py_suffix(__name__)
     try:
         main()
     except FatalError as e:
-        log.error(f"\nA fatal error occurred: {e}")
-        sys.exit(2)
+        log.print("")
+        log.die(f"A fatal error occurred: {escape(str(e))}", exit_code=2)
     except serial.serialutil.SerialException as e:
-        log.error(f"\nA serial exception error occurred: {e}")
-        log.error(
+        log.print("")
+        log.die(
+            f"A serial exception error occurred: {escape(str(e))}\n"
             "Note: This error originates from pySerial. "
             "It is likely not a problem with esptool, "
-            "but with the hardware connection or drivers."
+            "but with the hardware connection or drivers.\n"
+            f"For troubleshooting steps visit: {TROUBLESHOOTING_GUIDE_URL}"
         )
-        log.error(f"For troubleshooting steps visit: {TROUBLESHOOTING_GUIDE_URL}")
-        sys.exit(1)
     except StopIteration:
-        log.error(traceback.format_exc())
-        log.error("A fatal error occurred: The chip stopped responding.")
-        sys.exit(2)
+        log.die(
+            escape(traceback.format_exc()),
+            "\nA fatal error occurred: The chip stopped responding.",
+            exit_code=2,
+        )
     except KeyboardInterrupt:
-        log.error("KeyboardInterrupt: Run cancelled by user.")
-        sys.exit(2)
+        log.die("KeyboardInterrupt: Run cancelled by user.", exit_code=2)
 
 
 if __name__ == "__main__":

@@ -34,13 +34,13 @@
     dependencies = [
         "bitstring>=3.1.6,!=4.2.0",
         "cryptography>=43.0.0",
-        "cryptography<49.0.0; platform_system == 'Darwin' and platform_machine == 'x86_64'",
         "pyserial>=3.3",
         "reedsolo>=1.5.3,<1.8",
         "PyYAML>=5.1",
         "intelhex",
         "rich_click<2",
         "click<9",
+        "esp-pylib[ide,serial,cli]>=1.0.0",
     ]
 
 [project.urls]
@@ -62,7 +62,7 @@
     ]
     hsm = ["python-pkcs11"]
     docs = [
-        "esp-docs~=2.1",
+        "esp-docs>=2.1.4,<3",
         "sphinx-tabs",
     ]
 
@@ -80,7 +80,7 @@
 
 [tool.commitizen]
     name = "czespressif"
-    version = "5.3.1"
+    version = "5.4.0"
     update_changelog_on_bump = true
     tag_format = "v$version"
     changelog_start_rev = "v4.2.1"

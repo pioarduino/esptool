@@ -9,8 +9,14 @@ import re
 import struct
 from typing import IO, TypeAlias
 
+from esp_pylib.errors import FatalError as _PylibFatalError
+
 # Define a custom type for the input
 ImageSource: TypeAlias = str | bytes | IO[bytes]
+
+# Chips that implement the Secure Debug Controller (SDC). Append new target
+# names here as SDC support is added on additional chips.
+SDC_SUPPORTED_CHIPS = ("ESP32-S31",)
 
 
 def byte(bitstr, index):
@@ -136,7 +142,7 @@ def check_deprecated_py_suffix(module_name: str) -> None:
 
     script_name = sys.argv[0] if sys.argv else ""
     if script_name.endswith(module_name + ".py"):
-        log.warning(
+        log.warn(
             f"DEPRECATED: '{module_name}.py' is deprecated. Please use '{module_name}' "
             "instead. The '.py' suffix will be removed in a future major release."
         )
@@ -157,14 +163,15 @@ class PrintOnce:
             self.already_printed = True
 
 
-class FatalError(RuntimeError):
+class FatalError(_PylibFatalError):
     """
     Wrapper class for runtime errors that aren't caused by internal bugs, but by
     ESP ROM responses or input content.
-    """
 
-    def __init__(self, message):
-        RuntimeError.__init__(self, message)
+    Extends `esp_pylib.errors.FatalError` (itself a ``RuntimeError``) so
+    existing ``except FatalError`` / ``except RuntimeError`` blocks in esptool
+    and downstream tools (espefuse, espsecure) keep working unchanged.
+    """
 
     @staticmethod
     def WithResult(message, result):
@@ -266,16 +273,29 @@ class NANDEraseFailed(FatalError):
         FatalError.__init__(self, message)
 
 
-class UnsupportedCommandError(RuntimeError):
+class UnsupportedCommandError(FatalError):
     """
     Wrapper class for when ROM loader returns an invalid command response.
 
-    Usually this indicates the loader is running in Secure Download Mode.
+    Usually this indicates the loader is running in a restricted download mode
+    (e.g. Secure Download Mode).
     """
 
     def __init__(self, esp, op):
         if esp.secure_download_mode:
             msg = f"This command ({op:#x}) is not supported in Secure Download Mode"
+        elif getattr(esp, "CHIP_NAME", None) in SDC_SUPPORTED_CHIPS:
+            # SDC is only implemented on specific chips, so only mention it there
+            # to avoid confusing users of other chips with an irrelevant hint.
+            msg = (
+                f"This command ({op:#x}) is not supported in the current download "
+                "mode. If download mode is disabled and the Secure Debug "
+                "Controller (SDC) is enabled, re-open download mode by verifying a "
+                "download-reuse certificate ('esptool verify-sdc-certificate'), "
+                "then reconnect with '--before no-reset'."
+            )
         else:
-            msg = f"Invalid (unsupported) command {op:#x}"
-        RuntimeError.__init__(self, msg)
+            msg = (
+                f"This command ({op:#x}) is not supported in the current download mode"
+            )
+        super().__init__(msg)

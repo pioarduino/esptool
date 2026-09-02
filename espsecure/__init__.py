@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: 2016-2025 Espressif Systems (Shanghai) CO LTD
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
+import binascii
 import configparser
 import hashlib
+import json
 import operator
 import os
 import struct
@@ -19,9 +21,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa, utils
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.utils import int_to_bytes
+from esp_pylib.cli_options import MutuallyExclusiveOption, OptionEatAll
+from esp_pylib.cli_types import AnyIntType
+from esp_pylib.excepthook import install_exception_reporting
+from rich.markup import escape
 
 import esptool
-from esptool.cli_util import OptionEatAll
 from esptool.logger import log
 from esptool.util import check_deprecated_py_suffix
 
@@ -117,7 +122,7 @@ def digest_secure_bootloader(
     _check_output_is_not_input(image, output)
     _check_output_is_not_input(iv_file, output)
     if iv_file is not None:
-        log.warning("--iv argument is for TESTING PURPOSES ONLY")
+        log.warn("--iv argument is for TESTING PURPOSES ONLY")
         iv = iv_file.read(128)
     else:
         iv = os.urandom(128)
@@ -170,7 +175,7 @@ def digest_secure_bootloader(
             f.write(word[::-1])  # swap word order in the result
         f.write(b"\xff" * (0x1000 - f.tell()))  # pad to 0x1000
         f.write(plaintext_image)
-    log.print(f'Digest + image written to "{output}"')
+    log.print(f'Digest + image written to "{escape(str(output))}"')
 
 
 def _generate_ecdsa_signing_key(curve_id: ec.EllipticCurve, keyfile: str):
@@ -191,6 +196,69 @@ def _generate_ecdsa_signing_key(curve_id: ec.EllipticCurve, keyfile: str):
         f.write(pem)
 
 
+def _load_private_key_unified(
+    keyfile_data: bytes, key_type_hint: str | None = None
+) -> rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey:
+    """
+    Load private key that can be either RSA or ECDSA.
+    For SDC certificates, only ECDSA P-256 is supported.
+    For Secure Boot v2, RSA-3072 and ECDSA (P-192, P-256, P-384) are supported.
+    """
+    try:
+        private_key = serialization.load_pem_private_key(
+            keyfile_data, password=None, backend=default_backend()
+        )
+
+        if isinstance(private_key, rsa.RSAPrivateKey):
+            if key_type_hint == "sdc":
+                raise esptool.FatalError(
+                    "SDC certificates only support ECDSA P-256 keys, not RSA keys."
+                )
+            # Validate RSA key size for secure boot v2
+            if private_key.key_size != 3072:
+                raise esptool.FatalError(
+                    f"RSA key has {private_key.key_size} bits. "
+                    "Only RSA-3072 is supported."
+                )
+            return private_key
+
+        elif isinstance(private_key, ec.EllipticCurvePrivateKey):
+            # Validate ECDSA curve
+            if key_type_hint == "sdc":
+                # SDC only supports P-256
+                if not isinstance(private_key.curve, ec.SECP256R1):
+                    raise esptool.FatalError(
+                        "SDC certificates only support ECDSA P-256 (SECP256R1), "
+                        f"not {private_key.curve.name}"
+                    )
+            elif key_type_hint == "sbv2":
+                # Secure Boot v2 supports P-192, P-256, P-384
+                if not isinstance(
+                    private_key.curve, (ec.SECP192R1, ec.SECP256R1, ec.SECP384R1)
+                ):
+                    raise esptool.FatalError(
+                        f"Unsupported ECDSA curve: {private_key.curve.name}. "
+                        "Supported curves: P-192, P-256, P-384"
+                    )
+            else:
+                # Default validation - allow common curves
+                if not isinstance(
+                    private_key.curve, (ec.SECP192R1, ec.SECP256R1, ec.SECP384R1)
+                ):
+                    raise esptool.FatalError(
+                        f"Unsupported ECDSA curve: {private_key.curve.name}. "
+                        "Supported curves: P-192, P-256, P-384"
+                    )
+            return private_key
+        else:
+            raise esptool.FatalError("Unsupported private key type")
+
+    except Exception as e:
+        if isinstance(e, esptool.FatalError):
+            raise
+        raise esptool.FatalError(f"Error loading private key: {e}")
+
+
 def generate_signing_key(version: int, scheme: str | None, keyfile: str):
     if os.path.exists(keyfile):
         raise esptool.FatalError(f"ERROR: Key file {keyfile} already exists.")
@@ -202,7 +270,10 @@ def generate_signing_key(version: int, scheme: str | None, keyfile: str):
         Generate an ECDSA signing key for signing secure boot images (post-bootloader)
         """
         _generate_ecdsa_signing_key(ec.SECP256R1, keyfile)
-        log.print(f'ECDSA NIST256p private key in PEM format written to "{keyfile}".')
+        log.print(
+            f"ECDSA NIST256p private key in PEM format written to "
+            f'"{escape(str(keyfile))}".'
+        )
     elif version == "2":
         if scheme == "rsa3072" or scheme is None:
             """Generate a RSA 3072 signing key for signing secure boot images"""
@@ -215,24 +286,30 @@ def generate_signing_key(version: int, scheme: str | None, keyfile: str):
             )
             with open(keyfile, "wb") as f:
                 f.write(private_key)
-            log.print(f'RSA 3072 private key in PEM format written to "{keyfile}".')
+            log.print(
+                f"RSA 3072 private key in PEM format written to "
+                f'"{escape(str(keyfile))}".'
+            )
         elif scheme == "ecdsa192":
             """Generate a ECDSA 192 signing key for signing secure boot images"""
             _generate_ecdsa_signing_key(ec.SECP192R1, keyfile)
             log.print(
-                f'ECDSA NIST192p private key in PEM format written to "{keyfile}".'
+                f"ECDSA NIST192p private key in PEM format written to "
+                f'"{escape(str(keyfile))}".'
             )
         elif scheme == "ecdsa256":
             """Generate a ECDSA 256 signing key for signing secure boot images"""
             _generate_ecdsa_signing_key(ec.SECP256R1, keyfile)
             log.print(
-                f'ECDSA NIST256p private key in PEM format written to "{keyfile}".'
+                f"ECDSA NIST256p private key in PEM format written to "
+                f'"{escape(str(keyfile))}".'
             )
         elif scheme == "ecdsa384":
             """Generate a ECDSA 384 signing key for signing secure boot images"""
             _generate_ecdsa_signing_key(ec.SECP384R1, keyfile)
             log.print(
-                f'ECDSA NIST384p private key in PEM format written to "{keyfile}".'
+                f"ECDSA NIST384p private key in PEM format written to "
+                f'"{escape(str(keyfile))}".'
             )
         else:
             raise esptool.FatalError(f"ERROR: Unsupported signing scheme {scheme}.")
@@ -345,7 +422,7 @@ def _get_sbv2_pub_key(keyfile: IO) -> rsa.RSAPublicKey | ec.EllipticCurvePublicK
         or b"-BEGIN EC PRIVATE KEY" in key_data
         or b"-BEGIN PRIVATE KEY" in key_data
     ):
-        return _load_sbv2_signing_key(key_data).public_key()
+        return _load_private_key_unified(key_data, key_type_hint="sbv2").public_key()
     elif b"-BEGIN PUBLIC KEY" in key_data:
         vk = _load_sbv2_pub_key(key_data)
     else:
@@ -489,7 +566,10 @@ def sign_secure_boot_v1(
     )  # Version indicator, allow for different curves/formats later
     outfile.write(signature)
     outfile.close()
-    log.print(f'Signed {len(binary_content)} bytes of data from "{datafile.name}".')
+    log.print(
+        f"Signed {len(binary_content)} bytes of data from "
+        f'"{escape(str(datafile.name))}".'
+    )
 
 
 def sign_secure_boot_v2(
@@ -636,7 +716,7 @@ def sign_secure_boot_v2(
     with open(output, "wb") as f:
         f.write(contents + signature_sector)
     log.print(
-        f'Signed {len(contents)} bytes of data from "{datafile.name}". '
+        f'Signed {len(contents)} bytes of data from "{escape(str(datafile.name))}". '
         f"Signature sector now has {total_sig_blocks} signature blocks."
     )
 
@@ -735,12 +815,12 @@ def generate_signature_block_using_private_key(
 ) -> bytes:
     signature_blocks = b""
     for keyfile in keyfiles:
-        private_key = _load_sbv2_signing_key(keyfile.read())
+        private_key = _load_private_key_unified(keyfile.read(), key_type_hint="sbv2")
 
-        # Sign
+        # Sign using existing espsecure patterns (no wrapper functions)
         if isinstance(private_key, rsa.RSAPrivateKey):
             digest = _sha256_digest(contents)
-            # RSA signature
+            # RSA signature using existing secure boot v2 pattern
             signature = private_key.sign(
                 digest,
                 padding.PSS(
@@ -773,7 +853,7 @@ def generate_signature_block_using_private_key(
             else:
                 raise esptool.FatalError("Invalid ECDSA curve instance.")
 
-            # ECDSA signatures
+            # ECDSA signatures using existing espsecure pattern
             signature = private_key.sign(digest, ec.ECDSA(utils.Prehashed(hash_type)))
 
             pubkey_point = _microecc_format(numbers.x, numbers.y, curve_len)
@@ -1087,13 +1167,16 @@ def extract_public_key(version: str, keyfile: IO, public_keyfile: IO):
         Load an RSA or an ECDSA private key and extract the public key
         as raw binary data.
         """
-        sk = _load_sbv2_signing_key(keyfile.read())
+        sk = _load_private_key_unified(keyfile.read(), key_type_hint="sbv2")
         vk = sk.public_key().public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
     public_keyfile.write(vk)
-    log.print(f'"{keyfile.name}" public key extracted to "{public_keyfile.name}".')
+    log.print(
+        f'"{escape(str(keyfile.name))}" public key extracted to '
+        f'"{escape(str(public_keyfile.name))}".'
+    )
 
 
 def extract_pubkey_from_hsm(config: configparser.SectionProxy) -> list[IO]:
@@ -1237,7 +1320,10 @@ def digest_sbv2_public_key(keyfile: IO, output: str):
     _check_output_is_not_input(keyfile, output)
     public_key_digest = _digest_sbv2_public_key(keyfile)
     with open(output, "wb") as f:
-        log.print(f'Writing the public key digest of "{keyfile.name}" to "{output}".')
+        log.print(
+            f'Writing the public key digest of "{escape(str(keyfile.name))}" '
+            f'to "{escape(str(output))}".'
+        )
         f.write(public_key_digest)
 
 
@@ -1257,8 +1343,8 @@ def digest_private_key(keyfile: IO, keylen: int, digest_file: IO):
     digest_file.write(result)
     len_msg = "" if keylen == 256 else " (truncated to 192 bits)"
     log.print(
-        f'SHA-256 digest of private key "{keyfile.name}"{len_msg} '
-        f'written to "{digest_file.name}".'
+        f'SHA-256 digest of private key "{escape(str(keyfile.name))}"{len_msg} '
+        f'written to "{escape(str(digest_file.name))}".'
     )
 
 
@@ -1363,7 +1449,7 @@ def _flash_encryption_operation_esp32(
         )
 
     if flash_crypt_conf == 0:
-        log.warning("Setting FLASH_CRYPT_CONF to zero is not recommended.")
+        log.warn("Setting FLASH_CRYPT_CONF to zero is not recommended.")
 
     tweak_range = _flash_encryption_tweak_range_bits(flash_crypt_conf)
     key = int.from_bytes(key, byteorder="big", signed=False)
@@ -1586,7 +1672,7 @@ def _check_output_is_not_input(
         )
 
 
-class Group(esptool.cli_util.Group):
+class EspsecureGroup(esptool.cli_util.EsptoolGroup):
     DEPRECATED_OPTIONS = {
         "--aes_xts": "--aes-xts",
         "--flash_crypt_conf": "--flash-crypt-conf",
@@ -1595,7 +1681,7 @@ class Group(esptool.cli_util.Group):
 
 
 @click.group(
-    cls=Group,
+    cls=EspsecureGroup,
     no_args_is_help=True,
     context_settings=dict(help_option_names=["-h", "--help"], max_content_width=120),
     help=f"espsecure v{esptool.__version__} - ESP32 Secure Boot & Flash Encryption "
@@ -1891,7 +1977,9 @@ def digest_private_key_cli(keyfile, keylen, digest_file):
 @click.argument("key-file", type=click.File("wb", lazy=True))
 def generate_flash_encryption_key(keylen: int, key_file: IO):
     """Generate a development-use flash encryption key with random data."""
-    log.print(f'Writing {keylen} random bits to key file "{key_file.name}".')
+    log.print(
+        f'Writing {keylen} random bits to key file "{escape(str(key_file.name))}".'
+    )
     key_file.write(os.urandom(keylen // 8))
 
 
@@ -1913,13 +2001,13 @@ def generate_flash_encryption_key(keylen: int, key_file: IO):
 @click.option(
     "--address",
     "-a",
-    type=esptool.cli_util.AnyIntType(),
+    type=AnyIntType(),
     required=True,
     help="Address offset in flash that file was read from.",
 )
 @click.option(
     "--flash-crypt-conf",
-    type=esptool.cli_util.AnyIntType(),
+    type=AnyIntType(),
     default=0xF,
     help="Override FLASH_CRYPT_CONF eFuse value (default is 0xF) (applicable only for "
     "ESP32).",
@@ -1958,13 +2046,13 @@ def decrypt_flash_data_cli(
 @click.option(
     "--address",
     "-a",
-    type=esptool.cli_util.AnyIntType(),
+    type=AnyIntType(),
     help="Address offset in flash where file will be flashed.",
     required=True,
 )
 @click.option(
     "--flash-crypt-conf",
-    type=esptool.cli_util.AnyIntType(),
+    type=AnyIntType(),
     default=0xF,
     help="Override FLASH_CRYPT_CONF eFuse value (default is 0xF) (applicable only for "
     "ESP32).",
@@ -1985,6 +2073,284 @@ def encrypt_flash_data_cli(
     )
 
 
+def _enable_verbose(ctx, param, value):
+    """Callback for the SDC commands' ``--verbose`` flag.
+
+    Raises the logger level globally so the ``esp_sdc`` module's ``log.debug()``
+    diagnostics are shown, instead of threading a ``verbose`` argument through
+    every function. Used with ``expose_value=False`` so nothing is passed to the
+    command body.
+    """
+    if value:
+        log.set_verbosity("verbose")
+    return value
+
+
+@cli.command("generate-sdc-certificate")
+@click.option(
+    "--keyfile",
+    "-k",
+    type=click.Path(exists=True),
+    help="Path to ECDSA private key file in PEM format (required if not using HSM).",
+    exclusive_with=["hsm", "hsm_config"],
+    cls=MutuallyExclusiveOption,
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default="sdc_cert.bin",
+    help="Output file path for the generated SDC certificate (default: sdc_cert.bin).",
+)
+@click.option(
+    "--hsm",
+    is_flag=True,
+    help="Use an external Hardware Security Module to generate signature using PKCS#11 "
+    "interface.",
+    exclusive_with=["keyfile"],
+    cls=MutuallyExclusiveOption,
+)
+@click.option(
+    "--hsm-config",
+    type=click.Path(exists=True),
+    help="Config file for the external Hardware Security Module to be used to generate "
+    "signature. Required when --hsm is used.",
+    exclusive_with=["keyfile"],
+    cls=MutuallyExclusiveOption,
+)
+@click.option(
+    "--pub-key",
+    type=click.Path(exists=True),
+    help="Public key file (PEM format) corresponding to the private key in HSM. "
+    "If not provided, it will be extracted from HSM.",
+)
+@click.option(
+    "--enable-jtag",
+    is_flag=True,
+    help="Enable JTAG debugging interface access for SDC operations.",
+)
+@click.option(
+    "--enable-download-reuse",
+    is_flag=True,
+    help="Enable download mode reuse capability for SDC operations.",
+)
+@click.option(
+    "--enable-force-spi-boot",
+    is_flag=True,
+    help="Enable Force SPI boot mode for SDC operations.",
+)
+@click.option(
+    "--mac",
+    help="Device MAC address (6 bytes). Accepts multiple formats: "
+    "colon-separated ('00:00:00:00:00:00'), dash-separated "
+    "('00-00-00-00-00-00'), or continuous hex ('000000000000'). "
+    "Also accepts file paths (.bin for binary, .hex for hex text). "
+    "Required if --chip-info is not provided. "
+    "Note: Extended MAC addresses (8 bytes) are not supported.",
+)
+@click.option(
+    "--sdc-session-counter",
+    type=AnyIntType(),
+    default=0,
+    help="SDC session counter (valid values: 0, 1, 3, 7; default: 0). "
+    "Must match the value burned in the device eFuse. SDC_SESSION_COUNTER is a "
+    "3-bit write-only eFuse whose bits burn 0->1, so it advances 0 -> 1 -> 3 -> 7 "
+    "(4 sessions). After each debugging session, increment by burning to eFuse "
+    "and generate a new certificate. If not provided, defaults to 0.",
+)
+@click.option(
+    "--chip-info",
+    type=click.Path(exists=True),
+    help="Path to pre-calculated chip_info.bin file (64 bytes). "
+    "Must contain chip_info (32 bytes) + nonce (32 bytes). "
+    "If provided, --mac and --sdc-session-counter are not required. "
+    "The chip_info is calculated from "
+    "SHA256(SHA256(MAC) + nonce + sdc_session_counter). "
+    "Nonce is extracted from last 32 bytes.",
+)
+@click.option(
+    "--usc",
+    type=click.Path(exists=True),
+    help="JSON configuration file for USC (Unlock Security Configuration) settings. "
+    "Overrides individual --enable-* flags if provided.",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    expose_value=False,
+    callback=_enable_verbose,
+    help="Enable detailed verbose output showing all intermediate steps and values.",
+)
+def generate_sdc_certificate_cli(
+    output,
+    usc,
+    enable_jtag,
+    enable_download_reuse,
+    enable_force_spi_boot,
+    chip_info,
+    mac,
+    sdc_session_counter,
+    keyfile,
+    hsm,
+    hsm_config,
+    pub_key,
+):
+    """Generate a Secure Debug Controller (SDC) certificate for secure debugging.
+
+    Certificate signing: use --keyfile (ECDSA P-256) or --hsm with --hsm-config.
+    Device information: use --chip-info <file> or --mac <address>
+    [--sdc-session-counter <n>].
+    Debug interface configuration: use --enable-jtag, --enable-download-reuse,
+    --enable-force-spi-boot, or --usc <json>.
+    """
+    # Mutually-exclusive options (--keyfile vs --hsm/--hsm-config) are enforced by
+    # MutuallyExclusiveOption at parse time. The remaining checks below are
+    # "requires"/"one-of" dependencies, which that class cannot express.
+    if hsm and not hsm_config:
+        raise click.BadParameter(
+            "--hsm-config is required when --hsm is used",
+            param_hint="--hsm-config",
+        )
+    if hsm_config and not hsm:
+        raise click.BadParameter(
+            "--hsm-config requires --hsm to be used", param_hint="--hsm"
+        )
+    if not hsm and not keyfile:
+        raise click.BadParameter(
+            "Either --keyfile or --hsm with --hsm-config must be provided",
+            param_hint="--keyfile or --hsm",
+        )
+    if keyfile and pub_key:
+        log.warning(
+            "Public key file is ignored when private key file is provided. "
+            "Public key will be derived from the private key."
+        )
+    if chip_info:
+        if mac or sdc_session_counter != 0:
+            log.warning(
+                "--mac and --sdc-session-counter are ignored "
+                "when --chip-info is provided"
+            )
+    elif not mac:
+        raise click.BadParameter(
+            "--mac is required when --chip-info is not provided",
+            param_hint="--mac",
+        )
+
+    # Make sure the output file does not overwrite any of the input files
+    # (consistency with the other espsecure commands).
+    for input_file in (keyfile, chip_info, usc, pub_key, hsm_config):
+        _check_output_is_not_input(input_file, output)
+
+    from .esp_sdc import generate_sdc_certificate
+
+    generate_sdc_certificate(
+        private_key_file=keyfile,
+        output_file=output,
+        usc=usc,
+        enable_jtag=enable_jtag,
+        enable_download_reuse=enable_download_reuse,
+        enable_force_spi_boot=enable_force_spi_boot,
+        chip_info_file=chip_info,
+        mac=mac,
+        sdc_session_counter=sdc_session_counter,
+        hsm=hsm,
+        hsm_config_file=hsm_config,
+        pub_key_file=pub_key,
+    )
+
+
+@cli.command("digest-sdc-public-key")
+@click.option(
+    "--keyfile",
+    "-k",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ECDSA private key file in PEM format. "
+    "Public key will be extracted from this private key.",
+)
+@click.option(
+    "--pub-key",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ECDSA public key file in PEM format.",
+)
+@click.option(
+    "--hsm",
+    is_flag=True,
+    default=False,
+    help="Use Hardware Security Module (HSM) to extract public key. "
+    "Requires --hsm-config option.",
+)
+@click.option(
+    "--hsm-config",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to HSM configuration file (required if --hsm is used).",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    expose_value=False,
+    callback=_enable_verbose,
+    help="Enable detailed verbose output showing intermediate values.",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default="sdc_pub_key_digest.bin",
+    help="Output file path for SDC public key digest "
+    "(default: sdc_pub_key_digest.bin).",
+)
+def digest_sdc_public_key_cli(
+    keyfile,
+    pub_key,
+    hsm,
+    hsm_config,
+    output,
+):
+    """Generate SDC public key digest.
+
+    Public Key Input: Use one of the following options:
+    - --keyfile (ECDSA P-256 private key in pem format),
+    - --pub-key (ECDSA P-256 public key in pem format),
+    - --hsm with --hsm-config (Hardware Security Module).
+    Output: Use --output/-o to specify the output file path.
+    """
+    # Validate that at least one input option is provided
+    if not keyfile and not pub_key and not hsm:
+        raise click.BadParameter(
+            "One of --keyfile, --pub-key, or --hsm must be provided",
+            param_hint="--keyfile/--pub-key/--hsm",
+        )
+
+    # Validate HSM options
+    if hsm and not hsm_config:
+        raise click.BadParameter(
+            "--hsm-config is required when using --hsm",
+            param_hint="--hsm-config",
+        )
+
+    # Validate that only one input option is used
+    input_count = sum([bool(keyfile), bool(pub_key), bool(hsm)])
+    if input_count > 1:
+        raise click.BadParameter(
+            "Only one of --keyfile, --pub-key, or --hsm can be provided",
+            param_hint="--keyfile/--pub-key/--hsm",
+        )
+
+    from .esp_sdc import digest_sdc_public_key
+
+    digest_sdc_public_key(
+        private_key_file=keyfile,
+        public_key_file=pub_key,
+        output_file=output,
+        hsm=hsm,
+        hsm_config_file=hsm_config,
+    )
+
+
 def main(argv: list[str] | None = None):
     """
     Main function for espsecure
@@ -2002,16 +2368,19 @@ def main(argv: list[str] | None = None):
 
 
 def _main():
+    # Chain the esp-pylib exception hook so uncaught errors are forwarded to
+    # the IDE WebSocket (when ``ESPRESSIF_IDE_WS`` is set). Safe to call
+    # multiple times — the hook chains to whatever was already installed.
+    install_exception_reporting()
     check_deprecated_py_suffix(__name__)
     try:
         main()
     except esptool.FatalError as e:
-        log.error(f"\nA fatal error occurred: {e}")
-        sys.exit(2)
+        log.die(f"\nA fatal error occurred: {escape(str(e))}", exit_code=2)
     except ValueError as e:
         try:
             if [arg for arg in e.args if "Could not deserialize key data." in arg]:
-                log.error(
+                log.err(
                     "Note: This error originates from the cryptography module. "
                     "It is likely not a problem with espsecure, "
                     "please make sure you are using a compatible OpenSSL backend."
@@ -2019,8 +2388,7 @@ def _main():
         finally:
             raise
     except KeyboardInterrupt:
-        log.error("KeyboardInterrupt: Run cancelled by user.")
-        sys.exit(2)
+        log.die("KeyboardInterrupt: Run cancelled by user.", exit_code=2)
 
 
 if __name__ == "__main__":

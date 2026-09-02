@@ -1,3 +1,38 @@
+## v5.4.0 (2026-09-02)
+
+### ✨ New Features
+
+- **stub_flasher**: Update flasher stub to v1.2.2 *(Jaroslav Burian - 4b64d42)*
+- **stub_flasher**: Update flasher stub to v1.2.1 *(Jaroslav Burian - e881f4a)*
+- **stub_flasher**: Bump flasher stub to v1.1.0 *(Jaroslav Burian - 8fbc269)*
+- **esptool**: Add Secure Debug Controller commands *(Aditya Patwardhan - 92842ee)*
+- **espsecure**: Add support for Secure Debug Controller commands *(Aditya Patwardhan - ba57b82)*
+- **espefuse**: Adds eFuse token dump *(Konstantin Kondrashov - a634b47)*
+- Extract connect_esp function to cmds *(Nebojša Cvetković - 9a6c5cb)*
+- Migrate esp_rfc2217_server to use esp-pylib and rich_click *(Peter Dragun - 8ec37d3)*
+- Migrate esptool to use esp-pylib *(Peter Dragun - bd052d6)*
+
+### 🐛 Bug Fixes
+
+- **espefuse**: Correct eFuse error and date register offsets *(Roland Dobai - 464304e)*
+- **esp32-c61**: Identify in-package flash and PSRAM variants *(Roland Dobai - bed2388)*
+- **espefuse**: Close the summary file after writing the JSON output *(Peter Dragun - 9f5d8b0)*
+- **espefuse**: Remove adc_tp class for irrelevant fields *(Konstantin Kondrashov - e7f3ca8)*
+- Unlocked cryptography bounds for Intel Mac *(Jakub Kocka - c4fc382)*
+- Budget stub erase work in compressed flash timeouts *(Jaroslav Burian - 1040eea)*
+- Raise default erase_region_timeout_per_mb to 40s *(Jaroslav Burian - b1594ce)*
+- satisfy mypy after adding esp-pylib to pre-commit *(Peter Dragun - c4eb420)*
+
+### 📖 Documentation
+
+- **troubleshooting**: Make Secure Boot limitations only visible for ESP32-C3 *(Peter Dragun - 18cd4c7)*
+- **contributing.rst**: Add section about reusing shared code (esp-pylib) *(Peter Dragun - 82d7d7a)*
+- Add ESP32-S31 target to documentation *(Peter Dragun - 9a35108)*
+- Fix missing ESP32-C61 in chip list for 32MB+ flash access *(Peter Dragun - cd5c428)*
+- Fix supported flash sizes for esp32p4, esp32c5, esp32c61 and esp32h4 *(Peter Dragun - 863c2b5)*
+- Add documentation for color output and CLI help themes *(Peter Dragun - 0315a10)*
+
+
 ## v5.3.1 (2026-06-26)
 
 ### 🐛 Bug Fixes
