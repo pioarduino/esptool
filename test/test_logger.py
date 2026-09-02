@@ -409,6 +409,41 @@ class TestLogger:
         assert "Progress: [██████████] 100.0% (4/4) " in output
         assert output.endswith("\n")
 
+    def test_progress_bar_overwrites_when_piped_with_capable_term(
+        self, logger, monkeypatch
+    ):
+        """Redraw in place on a non-TTY stream whose ``TERM`` supports ANSI.
+
+        Regression test: PlatformIO's build/upload task in VS Code's
+        integrated terminal pipes esptool's stdout (``isatty()`` is False)
+        but still exports a capable ``TERM``. Without the fallback in
+        ``EsptoolLogger._force_interactive_console``, Rich's `Console`
+        treats the stream as non-interactive and strips the ``\\r`` /
+        ``CSI 2K`` control codes, so every update printed on its own line
+        instead of overwriting the previous one.
+        """
+        monkeypatch.setenv("TERM", "xterm-256color")
+        piped = StringIO()
+        piped.isatty = lambda: False  # type: ignore[method-assign]
+
+        from esp_pylib import logger as esp_pylib_logger
+
+        token = esp_pylib_logger._progress_output.set(piped)
+        try:
+            logger.progress_bar(1, 2, prefix="Writing ", bar_length=10)
+            logger.progress_bar(2, 2, prefix="Writing ", bar_length=10)
+        finally:
+            esp_pylib_logger._progress_output.reset(token)
+
+        output = piped.getvalue()
+        assert output.count("\r\x1b[2K") == 2
+        assert "Writing [█████░░░░░]  50.0% " in output
+        assert "Writing [██████████] 100.0% " in output
+        assert output.endswith("\n")
+        # A single redraw survives in place: the mid-progress bar text must
+        # not appear on its own separate line.
+        assert output.count("\n") == 1
+
     def test_set_incomplete_logger(self, logger):
         with pytest.raises(
             TypeError,

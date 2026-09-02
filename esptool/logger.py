@@ -25,10 +25,24 @@ helpers such as `die` and `progress`.
 that reads ``EspLog.instance``) after installing `EsptoolLogger`.
 """
 
+import os
 from abc import ABC, abstractmethod
 from typing import Any
 
 from esp_pylib.logger import EspLog, EspLogBase, Verbosity, log
+
+# TERM values that historically implied ANSI control-code support even when
+# the stream isn't a real TTY (e.g. PlatformIO's build/upload task in VS
+# Code's integrated terminal pipes esptool's stdout, so ``isatty()`` is
+# False, but TERM is still set to one of these).
+_TERM_SUPPORTS_CONTROL_CODES = (
+    "xterm",
+    "xterm-256color",
+    "screen",
+    "screen-256color",
+    "linux",
+    "vt100",
+)
 
 __all__ = [
     "EsptoolLogger",
@@ -322,6 +336,34 @@ class EsptoolLogger(EspLog):
         kwargs.setdefault("soft_wrap", True)
         super().print(*args, **kwargs)
 
+    def _force_interactive_console(self, out: Any):
+        """Fall back to esptool's historical TTY heuristic for *out*.
+
+        `EspLog._get_interactive_console` only trusts `Console.is_terminal`,
+        which checks ``out.isatty()``. Some runners (e.g. PlatformIO's
+        build/upload task in VS Code's integrated terminal) pipe esptool's
+        stdout so ``isatty()`` is False, yet still export a ``TERM`` that
+        supports ANSI control codes and render output line-by-line rather
+        than dropping it. Without this, Rich strips the ``\\r`` / ``CSI 2K``
+        redraw sequence (it discards control-only segments whenever
+        ``is_terminal`` is False) and every update prints on its own line.
+        Mirrors the pre-migration esptool logger's ``_set_smart_features``
+        detection: ``isatty()`` OR a known-capable ``TERM``.
+        """
+        try:
+            isatty = hasattr(out, "isatty") and out.isatty()
+        except (AttributeError, ValueError, OSError):
+            isatty = False
+        term_supports_control_codes = (
+            os.getenv("TERM", "").lower() in _TERM_SUPPORTS_CONTROL_CODES
+        )
+        if not (isatty or term_supports_control_codes):
+            return None
+        # ``soft_wrap=True`` avoids Rich hard-wrapping the line at the
+        # (unknown, defaulted-to-80) console width when there is no real
+        # terminal to query for a size.
+        return self._make_console(file=out, force_terminal=True, soft_wrap=True)
+
     def progress_bar(
         self,
         cur_iter: int,
@@ -355,8 +397,10 @@ class EsptoolLogger(EspLog):
         )
         bar = "█" * filled_length + "░" * (bar_length - filled_length)
 
-        interactive = self._get_interactive_console()
         out = self._get_progress_print_file()
+        interactive = self._get_interactive_console()
+        if interactive is None and self._verbosity != Verbosity.VERBOSE:
+            interactive = self._force_interactive_console(out)
         console = (
             interactive
             if interactive is not None
@@ -369,7 +413,7 @@ class EsptoolLogger(EspLog):
             or self._verbosity == Verbosity.VERBOSE
             else ""
         )
-        if not end:
+        if interactive is not None and self._verbosity != Verbosity.VERBOSE:
             self._erase_line(console)
 
         console.print(
