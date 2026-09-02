@@ -425,18 +425,9 @@ class TestLogger:
                 suffix=" (4/4)",
                 bar_length=10,
             )
-        output = captured.get()
-        half_bar = (
-            f"Progress: {UNICODE_PROGRESS_CHAR * 5}       50.0% (2/4)" in output
-            or f"Progress: {ASCII_PROGRESS_CHAR * 5}       50.0% (2/4)" in output
-        )
-        full_bar = (
-            f"Progress: {UNICODE_PROGRESS_CHAR * 10} 100.0% (4/4)" in output
-            or f"Progress: {ASCII_PROGRESS_CHAR * 10} 100.0% (4/4)" in output
-        )
-        assert half_bar
-        assert full_bar
-        assert output.endswith("\n")
+            output = fake_out.getvalue()
+            assert "Progress: [█████░░░░░]  50.0% (2/4)" in output
+            assert "Progress: [██████████] 100.0% (4/4) \n" in output
 
     def test_set_incomplete_logger(self, logger):
         with pytest.raises(
