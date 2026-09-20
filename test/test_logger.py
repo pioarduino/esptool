@@ -1,7 +1,9 @@
+import sys
 from io import StringIO
 from unittest.mock import patch
 
 import pytest
+from esp_pylib import logger as esp_pylib_logger
 from esp_pylib.logger import EspLog, EspLogBase
 
 from esptool import __version__
@@ -368,45 +370,53 @@ class TestLogger:
         logger._smart_features = True
         logger._stdout._force_terminal = True
         monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
-        logger.stage()
-        logger.progress_bar(4, 4, prefix="Reading: ", bar_length=10)
-        assert logger._stage_newline_count == 1
-        assert not logger._stage_progress_visible
-        logger.stage(finish=True)
-        assert logger._stage_newline_count == 0
+        token = esp_pylib_logger._progress_output.set(sys.stdout)
+        try:
+            logger.stage()
+            logger.progress_bar(4, 4, prefix="Reading: ", bar_length=10)
+            assert logger._stage_newline_count == 1
+            assert not logger._stage_progress_visible
+            logger.stage(finish=True)
+            assert logger._stage_newline_count == 0
 
-        logger.stage()
-        logger.progress_bar(2, 4, prefix="Reading: ", bar_length=10)
-        assert logger._stage_newline_count == 0
-        assert logger._stage_progress_visible
-        logger.stage(finish=True)
-        assert not logger._stage_progress_visible
-        capsys.readouterr()
+            logger.stage()
+            logger.progress_bar(2, 4, prefix="Reading: ", bar_length=10)
+            assert logger._stage_newline_count == 0
+            assert logger._stage_progress_visible
+            logger.stage(finish=True)
+            assert not logger._stage_progress_visible
+            capsys.readouterr()
+        finally:
+            esp_pylib_logger._progress_output.reset(token)
 
     def test_progress_bar(self, monkeypatch, capsys):
         """Interactive redraw uses ``\\r`` + ``CSI K`` + ``CSI F`` (cursor up)."""
         monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
         logger = EsptoolLogger()
-        logger.progress_bar(
-            cur_iter=2,
-            total_iters=4,
-            prefix="Progress: ",
-            suffix=" (2/4)",
-            bar_length=10,
-        )
-        logger.progress_bar(
-            cur_iter=4,
-            total_iters=4,
-            prefix="Progress: ",
-            suffix=" (4/4)",
-            bar_length=10,
-        )
-        output = capsys.readouterr().out
-        assert "\r\x1b[K" in output
-        assert "\x1b[F" in output
-        assert "Progress: [█████░░░░░]  50.0% (2/4)" in output
-        assert "Progress: [██████████] 100.0% (4/4) " in output
-        assert output.endswith("\n")
+        token = esp_pylib_logger._progress_output.set(sys.stdout)
+        try:
+            logger.progress_bar(
+                cur_iter=2,
+                total_iters=4,
+                prefix="Progress: ",
+                suffix=" (2/4)",
+                bar_length=10,
+            )
+            logger.progress_bar(
+                cur_iter=4,
+                total_iters=4,
+                prefix="Progress: ",
+                suffix=" (4/4)",
+                bar_length=10,
+            )
+            output = capsys.readouterr().out
+            assert "\r\x1b[K" in output
+            assert "\x1b[F" in output
+            assert "Progress: [█████░░░░░]  50.0% (2/4)" in output
+            assert "Progress: [██████████] 100.0% (4/4) " in output
+            assert output.endswith("\n")
+        finally:
+            esp_pylib_logger._progress_output.reset(token)
 
     def test_progress_bar_overwrites_when_piped_with_capable_term(self, monkeypatch):
         """Redraw in place on a non-TTY stream whose ``TERM`` supports ANSI.
