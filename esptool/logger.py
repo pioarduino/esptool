@@ -30,6 +30,7 @@ import sys
 from abc import ABC, abstractmethod
 from typing import Any
 
+from esp_pylib import logger as esp_pylib_logger
 from esp_pylib.logger import EspLog, EspLogBase, Verbosity, log
 
 # TERM values that historically implied ANSI control-code support even when
@@ -397,7 +398,7 @@ class EsptoolLogger(EspLog):
         )
         bar = "█" * filled_length + "░" * (bar_length - filled_length)
 
-        out = self._get_progress_print_file()
+        out = esp_pylib_logger._progress_output.get()
         smart_features = (
             self._verbosity != Verbosity.VERBOSE
             and self._stream_supports_control_codes(out)
