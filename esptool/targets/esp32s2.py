@@ -16,6 +16,14 @@ class ESP32S2ROM(ESP32ROM):
     CHIP_NAME = "ESP32-S2"
     IMAGE_CHIP_ID = 2
 
+    USB_OTG_SUPPORTED = True
+    USB_SERIAL_JTAG_SUPPORTED = False
+    WATCHDOG_RESET_SUPPORTED = True
+    SECURITY_INFO_SUPPORTED = True
+    CUSTOM_SPI_FLASH_PINS_SUPPORTED = True
+    FLASH_32BIT_ADDR_SUPPORTED = False
+    USES_MAGIC_VALUE = True
+
     IROM_MAP_START = 0x40080000
     IROM_MAP_END = 0x40B80000
     DROM_MAP_START = 0x3F000000
@@ -73,8 +81,6 @@ class ESP32S2ROM(ESP32ROM):
     PURPOSE_VAL_XTS_AES256_KEY_1 = 2
     PURPOSE_VAL_XTS_AES256_KEY_2 = 3
     PURPOSE_VAL_XTS_AES128_KEY = 4
-
-    USB_RAM_BLOCK = 0x800  # Max block size USB-OTG is used
 
     GPIO_STRAP_REG = 0x3F404038
     GPIO_STRAP_SPI_BOOT_MASK = 1 << 3  # Not download mode
@@ -269,10 +275,6 @@ class ESP32S2ROM(ESP32ROM):
             p == self.PURPOSE_VAL_XTS_AES256_KEY_2 for p in purposes
         )
 
-    def _post_connect(self):
-        if self.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
-
     def watchdog_reset(self):
         log.print("Hard resetting with a watchdog...")
         self.write_reg(self.RTC_CNTL_WDTWPROTECT_REG, self.RTC_CNTL_WDT_WKEY)  # unlock
@@ -313,12 +315,6 @@ class ESP32S2ROM(ESP32ROM):
 
 class ESP32S2StubLoader(StubMixin, ESP32S2ROM):
     """Stub loader for ESP32-S2, runs on top of ROM."""
-
-    def __init__(self, rom_loader):
-        super().__init__(rom_loader)  # Initialize the mixin
-        if rom_loader.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
-            self.FLASH_WRITE_SIZE = self.USB_RAM_BLOCK
 
 
 ESP32S2ROM.STUB_CLASS = ESP32S2StubLoader

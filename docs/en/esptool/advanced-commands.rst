@@ -1,5 +1,3 @@
-{IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000", esp32s31="0x2000"}
-
 .. _advanced-commands:
 
 Advanced Commands
@@ -53,7 +51,7 @@ The ``load-ram`` command allows the loading of an executable binary image (creat
 
 ::
 
-    esptool --no-stub load-ram ./test/images/helloworld-esp8266.bin
+    esptool --no-stub load-ram my_esp_app.bin
 
 .. note::
 
@@ -135,7 +133,7 @@ The Serial Flash Discoverable Parameters (SFDP) store essential vendor-specific 
 
 This will read 4 bytes from SFDP address 16.
 
-.. only:: not esp8266 and not esp32
+.. only:: SECURITY_INFO_SUPPORTED
 
     .. _get-security-info:
 

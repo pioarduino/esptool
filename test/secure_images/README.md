@@ -1,5 +1,23 @@
 # How are the test images generated?
 
+Binaries and PEMs in this directory are goldens for `espsecure` / espefuse tests.
+
+Licensing: see [`../LICENSE`](../LICENSE). Base bootloader / application images
+are ESP-IDF build products (Apache-2.0 for IDF code, plus third-party
+components such as newlib — see ESP-IDF `COPYRIGHT`). Derived artifacts below
+are produced with `espsecure` from those bases and the listed keys/IVs.
+**Do not** treat these `.bin` files as CC0.
+
+Refresh goldens with the `espsecure` commands below when intentionally updating
+fixtures, then commit the results.
+
+## Application / bootloader bases
+
+| File                                           | Origin                                                                                |
+|------------------------------------------------|---------------------------------------------------------------------------------------|
+| `bootloader.bin`, `bootloader_unsigned_v2.bin` | ESP-IDF bootloader builds (secure-boot-capable configs as noted below)                |
+| `hello-world-signed.bin`                       | ESP-IDF `hello_world` example, then signed (steps below). IDF build product, not CC0. |
+
 ## IV generation
 
 `{len}bit_iv.bin`

@@ -1,5 +1,3 @@
-{IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000", esp32s31="0x2000"}
-
 .. _troubleshooting:
 
 Troubleshooting
@@ -111,7 +109,7 @@ Early Stage Crash
 
    Use any of `serial terminal programs`_ to view the boot log. ({IDF_TARGET_NAME} baud rate is 115200bps). See if the program is crashing during early startup or outputting an error message.
 
-.. only:: not esp8266 and not esp32 and not esp32c2
+.. only:: USB_OTG_SUPPORTED or USB_SERIAL_JTAG_SUPPORTED
 
    Issues and Debugging in USB-Serial/JTAG or USB-OTG modes
    --------------------------------------------------------
@@ -124,6 +122,31 @@ Early Stage Crash
 
    On boards with two USB ports (usually marked as USB and UART), you can use the USB port for flashing while listening on the UART port for debugging purposes. This setup is useful for retrieving core dumps or the reset reason in the event of a crash. To implement this, connect the UART port to another instance of any of the `serial terminal programs`_, while repeating the failing action over the USB port. You'll be able to monitor the crash log without interference from the USB port used for communication or it disappearing due to a firmware crash.
    If your devkit doesn't have a dedicated USB port connected to an on-board USB-to-UART bridge, you can use a separate adapter to connect to the UART pins on the board.
+
+   Ports Without USB Descriptors (Containers and Virtual Machines)
+   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+   Esptool tells native USB interfaces apart from USB-to-UART bridges by the USB vendor and product ID (VID/PID) of the serial device, which it reads through pySerial. If the port has no USB descriptors, esptool reports a note ``Failed to get VID/PID of a device on ...`` and cannot detect which interface is in use.
+
+   In that case, the standard reset sequence is used. If the chip is connected through the USB-Serial/JTAG peripheral, add ``--before usb-reset`` to use its reset sequence.
+
+   It is better to fix the environment so the descriptors are available, because then all connection settings are selected correctly.
+
+   To read the descriptors, pySerial needs the port to be a real USB serial device of the operating system running esptool. Verify what is visible where esptool runs:
+
+   .. code-block:: bash
+
+      python -c "import serial.tools.list_ports as l; print([(p.device, p.vid, p.pid) for p in l.comports()])"
+
+   An empty list means no port can be identified. This typically happens when a hypervisor forwards a serial stream from the host instead of the USB device itself, when a ``socat`` bridge is used, or when the device is renamed on the way into a container. Depending on the environment, it can be avoided:
+
+   .. list::
+
+      * **Docker**: pass the device through with ``docker run --device /dev/ttyACM0 ...`` and keep the same name on both sides. Renaming it (``--device /dev/ttyACM0:/dev/esp0``) hides it from pySerial. The host ``sysfs`` is shared with the container, so the descriptors resolve.
+      * **WSL 2 on Windows**: for instructions on how to pass the device through, see the `Developer Portal article <https://developer.espressif.com/blog/espressif-devkits-with-wsl2/>`_.
+      * **Virtual machines**: use USB device passthrough rather than a forwarded serial port or a network serial bridge.
+
+   If the runtime cannot pass USB devices through at all, run esptool directly on the host instead.
 
 Serial Terminal Programs
 ------------------------
@@ -275,18 +298,22 @@ Flash and External Memory Support Limitations
 
 esptool has the following limitations when working with external flash and memory devices:
 
-- NAND flash is currently not supported. Only NOR flash chips are supported.
-- PSRAM access is not supported - esptool cannot read from or write to PSRAM.
-- Octal (OPI) flash is supported only on ESP32-S3 devices.
-- Accessing flash chip areas beyond 16MB (32-bit addressing) is supported only if **all** of the following conditions are met:
+.. list::
 
-   - The :ref:`flasher stub <stub>` is used, as the ROM bootloader does not support 32-bit addressing.
-   - The target chip is ESP32-S3, ESP32-C5, ESP32-P4, ESP32-C61, or ESP32-S31.
-   - The flash chip is one of the following supported models:
+   - NAND flash is currently not supported. Only NOR flash chips are supported.
+   - PSRAM access is not supported - esptool cannot read from or write to PSRAM.
+   - Octal (OPI) flash is supported only on ESP32-S3 devices.
+   :not FLASH_32BIT_ADDR_SUPPORTED: - Accessing flash chip areas beyond 16MB (32-bit addressing) is not supported on {IDF_TARGET_NAME}.
+   :FLASH_32BIT_ADDR_SUPPORTED: - Accessing flash chip areas beyond 16MB (32-bit addressing) is supported only if **all** of the following conditions are met:
 
-      - W25Q256
-      - GD25Q256
-      - XM25QH256D
+      .. only:: FLASH_32BIT_ADDR_SUPPORTED
+
+         - The :ref:`flasher stub <stub>` is used, as the ROM bootloader does not support 32-bit addressing.
+         - The flash chip is one of the following supported models:
+
+            - W25Q256
+            - GD25Q256
+            - XM25QH256D
 
 .. _sdm-limitations:
 
@@ -295,30 +322,36 @@ Secure Download Mode Limitations
 
 When Secure Download Mode is enabled, the available serial protocol commands are restricted. In addition to being unable to read flash data or read/write RAM, the following limitations apply:
 
-- The entire flash cannot be :ref:`erased <erase-flash>` using ``erase-flash``. Only flash regions aligned to multiples of ``4096`` (flash sector size) can be erased using ``erase-region``.
+.. list::
 
-   - Writing a binary with purely ``0xFF`` bytes can be used as a workaround to essentially erase flash if necessary, but this is slow and achieves the same result as ``erase-region``.
+   - The entire flash cannot be :ref:`erased <erase-flash>` using ``erase-flash``. Only flash regions aligned to multiples of ``4096`` (flash sector size) can be erased using ``erase-region``.
 
-- The baud rate cannot be :ref:`changed <baud-rate>` with the ``--baud`` option on ESP32-C5 and ESP32-C2.
+      - Writing a binary with purely ``0xFF`` bytes can be used as a workaround to essentially erase flash if necessary, but this is slow and achieves the same result as ``erase-region``.
 
-   - Esptool needs to read specific registers to first detect the crystal frequency, which is then used to calculate the baud rate parameter for the ``CHANGE_BAUDRATE`` (``0x0F``) command. This is not possible in Secure Download Mode, because reading any registers is disabled.
-   - The baud rate can be changed manually when using the :ref:`esptool API <scripting>` by sending the ``CHANGE_BAUDRATE`` command with the desired baud rate based on trial and error (e.g., seeing if the data is scrambled or not in a serial terminal program).
+   :esp32c2: - The baud rate cannot be :ref:`changed <baud-rate>` with the ``--baud`` option.
 
-- Flash write or erase operations might fail with the ``0164`` or ``0106`` error codes.
+      .. only:: esp32c2
 
-   - This is usually caused by incorrect flash size settings. Since the actual flash size cannot be detected in Secure Download Mode, the ROM bootloader defaults to a flash size of 2MB. Trying to access flash regions larger than 2MB will then fail.
-   - The flash size must be set manually using the ``--flash-size`` :ref:`option <flash-modes>` in CLI mode, or by calling the ``flash_set_parameters`` function when using the :ref:`esptool API <scripting>`.
-   - Esptool prints a warning about this whenever possible.
+         - Esptool needs to read specific registers to first detect the crystal frequency, which is then used to calculate the baud rate parameter for the ``CHANGE_BAUDRATE`` (``0x0F``) command. This is not possible in Secure Download Mode, because reading any registers is disabled.
+         - The baud rate can be changed manually when using the :ref:`esptool API <scripting>` by sending the ``CHANGE_BAUDRATE`` command with the desired baud rate based on trial and error (e.g., seeing if the data is scrambled or not in a serial terminal program).
 
-- Accessing SPI flash memory regions larger than 16MB is not possible when Secure Download Mode is enabled.
+   - Flash write or erase operations might fail with the ``0164`` or ``0106`` error codes.
 
-   - This is only possible if the :ref:`flasher stub <stub>` is used as described in `Flash and External Memory Support Limitations`_, but stub flasher cannot be used in Secure Download Mode.
-   - Any data written beyond the 16MB boundary will wrap around to the beginning of the flash because the 4-byte address gets truncated to 3 bytes.
-   - An application running on the ESP device itself can still access data beyond 16MB (for example, during an OTA update).
-   - It is recommended to only enable the Secure Download Mode if working with <16MB apps, if the app development is successfully finished, or if other ways to update the >16MB regions are available.
-   - Esptool prints a warning about this whenever possible.
+      - This is usually caused by incorrect flash size settings. Since the actual flash size cannot be detected in Secure Download Mode, the ROM bootloader defaults to a flash size of 2MB. Trying to access flash regions larger than 2MB will then fail.
+      - The flash size must be set manually using the ``--flash-size`` :ref:`option <flash-modes>` in CLI mode, or by calling the ``flash_set_parameters`` function when using the :ref:`esptool API <scripting>`.
+      - Esptool prints a warning about this whenever possible.
 
-.. only:: not esp8266 and not esp32
+   :FLASH_32BIT_ADDR_SUPPORTED: - Accessing SPI flash memory regions larger than 16MB is not possible when Secure Download Mode is enabled.
+
+      .. only:: FLASH_32BIT_ADDR_SUPPORTED
+
+         - This is only possible if the :ref:`flasher stub <stub>` is used as described in `Flash and External Memory Support Limitations`_, but stub flasher cannot be used in Secure Download Mode.
+         - Any data written beyond the 16MB boundary will wrap around to the beginning of the flash because the 4-byte address gets truncated to 3 bytes.
+         - An application running on the ESP device itself can still access data beyond 16MB (for example, during an OTA update).
+         - It is recommended to only enable the Secure Download Mode if working with <16MB apps, if the app development is successfully finished, or if other ways to update the >16MB regions are available.
+         - Esptool prints a warning about this whenever possible.
+
+.. only:: SECURITY_INFO_SUPPORTED
 
    See the :ref:`supported-in-sdm` section for more details.
 

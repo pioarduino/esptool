@@ -38,7 +38,7 @@ __all__ = [
     "write_nand_spare",
 ]
 
-__version__ = "5.4.0"
+__version__ = "5.5.0"
 
 import os
 import shlex
@@ -207,12 +207,19 @@ click.rich_click.COMMAND_GROUPS = {
 
 
 def add_spi_connection_arg(function):
+    supported_chips = ", ".join(
+        chip.CHIP_NAME
+        for chip in CHIP_DEFS.values()
+        if chip.CUSTOM_SPI_FLASH_PINS_SUPPORTED
+    )
     function = click.option(
         "--spi-connection",
         "-sc",
         help="Override default SPI flash memory connection. "
         "Value can be SPI, HSPI or a comma-separated list of 5 I/O numbers "
-        "to use for SPI flash (CLK,Q,D,HD,CS). Not supported with ESP8266.",
+        "to use for SPI flash (CLK,Q,D,HD,CS). Target chips with built-in "
+        "custom pin mapping support: "
+        f"{supported_chips}.",
         type=SpiConnectionType(),
     )(function)
     return function
@@ -293,9 +300,11 @@ def add_spi_flash_options(
                     extra_keep_args
                     + [
                         "80m",
+                        "64m",
                         "60m",
                         "48m",
                         "40m",
+                        "32m",
                         "30m",
                         "26m",
                         "24m",
@@ -347,12 +356,7 @@ def add_spi_flash_options(
 def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
     # Check if we are writing/erasing/reading past 16MB boundary
     if (
-        not (
-            esp.IS_STUB
-            # keep this in sync with docs - troubleshooting.rst
-            and esp.CHIP_NAME
-            in ["ESP32-S3", "ESP32-P4", "ESP32-C5", "ESP32-C61", "ESP32-S31"]
-        )
+        not (esp.IS_STUB and esp.FLASH_32BIT_ADDR_SUPPORTED)
         and address + size > 0x1000000
     ):
         raise FatalError(

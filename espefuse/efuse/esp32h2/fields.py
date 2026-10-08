@@ -88,14 +88,10 @@ class EspEfuses(base_fields.EspEfusesBase):
         self.efuses = self._convert_efuse_defs(self.Fields.EFUSES)
         self.efuses += self._convert_efuse_defs(self.Fields.KEYBLOCKS)
         if skip_connect:
-            self.efuses += self._convert_efuse_defs(
-                self.Fields.BLOCK2_CALIBRATION_EFUSES
-            )
+            self.efuses += self._convert_efuse_defs(self.Fields.CALIBRATION_EFUSES)
         else:
             if self.get_block_version() >= 2:
-                self.efuses += self._convert_efuse_defs(
-                    self.Fields.BLOCK2_CALIBRATION_EFUSES
-                )
+                self.efuses += self._convert_efuse_defs(self.Fields.CALIBRATION_EFUSES)
             self.efuses += self._convert_efuse_defs(self.Fields.CALC)
 
         if self.get_chip_version() <= 101:
@@ -106,7 +102,7 @@ class EspEfuses(base_fields.EspEfusesBase):
         return [EfuseField.convert(self, efuse) for efuse in efuse_defs]
 
     def _get_lazy_efuse_groups(self):
-        return [self.Fields.BLOCK2_CALIBRATION_EFUSES]
+        return [self.Fields.CALIBRATION_EFUSES]
 
     def read_coding_scheme(self):
         self.coding_scheme = self.REGS.CODING_SCHEME_RS

@@ -10,10 +10,10 @@ import sys
 import tempfile
 from functools import partial
 
-IMAGES_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "images")
-
 import pytest
-from conftest import need_to_install_package_err
+from conftest import IMAGES_FIXTURES_DIR, need_to_install_package_err
+
+IMAGES_DIR = str(IMAGES_FIXTURES_DIR)
 
 try:
     from esptool.targets import CHIP_DEFS

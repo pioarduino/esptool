@@ -1,6 +1,15 @@
 import os
+from pathlib import Path
 
 import pytest
+
+TEST_DIR = Path(__file__).resolve().parent
+# Committed fixture directories. Size/fill blobs under images/ and the RAM
+# hello world images under images/ram_helloworld/ are generated at pytest start
+# instead — see the builder calls in pytest_configure below.
+IMAGES_FIXTURES_DIR = TEST_DIR / "images"
+SECURE_FIXTURES_DIR = TEST_DIR / "secure_images"
+ELF2IMAGE_FIXTURES_DIR = TEST_DIR / "elf2image"
 
 
 def pytest_addoption(parser):
@@ -41,6 +50,16 @@ def pytest_configure(config):
     # test_espefuse.py only
     global arg_reset_port
     arg_reset_port = config.getoption("--reset-port")
+
+    # Trivial size/fill blobs (not firmware goldens) — see bin_builder.py
+    from bin_builder import materialize_bin_fixtures
+
+    materialize_bin_fixtures(IMAGES_FIXTURES_DIR)
+
+    # RAM hello world images — see ram_helloworld_builder.py
+    from ram_helloworld_builder import materialize_ram_helloworld
+
+    materialize_ram_helloworld(IMAGES_FIXTURES_DIR / "ram_helloworld")
 
     # register custom markers
     config.addinivalue_line(

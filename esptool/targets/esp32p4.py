@@ -16,6 +16,14 @@ class ESP32P4ROM(ESP32ROM):
     CHIP_NAME = "ESP32-P4"
     IMAGE_CHIP_ID = 18
 
+    USB_OTG_SUPPORTED = True
+    USB_SERIAL_JTAG_SUPPORTED = True
+    WATCHDOG_RESET_SUPPORTED = True
+    SECURITY_INFO_SUPPORTED = True
+    CUSTOM_SPI_FLASH_PINS_SUPPORTED = False
+    FLASH_32BIT_ADDR_SUPPORTED = True
+    USES_MAGIC_VALUE = False
+
     IROM_MAP_START = 0x40000000
     IROM_MAP_END = 0x4C000000
     DROM_MAP_START = 0x40000000
@@ -38,8 +46,6 @@ class ESP32P4ROM(ESP32ROM):
     SPI_W0_OFFS = 0x58
 
     SPI_ADDR_REG_MSB = False
-
-    USES_MAGIC_VALUE = False
 
     EFUSE_RD_REG_BASE = EFUSE_BASE + 0x030  # BLOCK0 read base address
 
@@ -74,8 +80,6 @@ class ESP32P4ROM(ESP32ROM):
     PURPOSE_VAL_XTS_AES256_KEY_1 = 2
     PURPOSE_VAL_XTS_AES256_KEY_2 = 3
     PURPOSE_VAL_XTS_AES128_KEY = 4
-
-    USB_RAM_BLOCK = 0x800  # Max block size USB-OTG is used
 
     GPIO_STRAP_REG = 0x500E0038
     GPIO_STRAP_SPI_BOOT_MASK = 0x8  # Not download mode
@@ -242,8 +246,7 @@ class ESP32P4ROM(ESP32ROM):
         ESPLoader.change_baud(self, baud)
 
     def _post_connect(self):
-        if self.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
+        super()._post_connect()
         if not self.secure_download_mode:
             if not self.sync_stub_detected:  # Don't run if stub is reused
                 self.disable_watchdogs()
@@ -266,15 +269,6 @@ class ESP32P4ROM(ESP32ROM):
                 | self.RTC_CNTL_SWD_AUTO_FEED_EN,
             )
             self.write_reg(self.RTC_CNTL_SWD_WPROTECT_REG, 0)
-
-    def check_spi_connection(self, spi_connection):
-        if not set(spi_connection).issubset(set(range(0, 55))):
-            raise FatalError("SPI Pin numbers must be in the range 0-54.")
-        if any([v for v in spi_connection if v in [24, 25]]):
-            log.warn(
-                "GPIO pins 24 and 25 are used by USB-Serial/JTAG, "
-                "consider using other pins for SPI flash connection."
-            )
 
     def watchdog_reset(self):
         log.print("Hard resetting with a watchdog...")
@@ -368,12 +362,6 @@ class ESP32P4ROM(ESP32ROM):
 
 class ESP32P4StubLoader(StubMixin, ESP32P4ROM):
     """Stub loader for ESP32-P4, runs on top of ROM."""
-
-    def __init__(self, rom_loader):
-        super().__init__(rom_loader)  # Initialize the mixin
-        if rom_loader.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
-            self.FLASH_WRITE_SIZE = self.USB_RAM_BLOCK
 
     def stub_json_name(self):
         if self.get_chip_revision() < 300:

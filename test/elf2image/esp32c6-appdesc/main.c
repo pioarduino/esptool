@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: 2023-2026 Espressif Systems (Shanghai) CO LTD
+ * SPDX-License-Identifier: CC0-1.0
+ */
 #include <stdint.h>
 
 // This is the structure of the application description section in the binary image (taken from ESP-IDF).

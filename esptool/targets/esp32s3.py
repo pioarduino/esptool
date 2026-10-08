@@ -14,8 +14,15 @@ from .esp32 import ESP32ROM
 
 class ESP32S3ROM(ESP32ROM):
     CHIP_NAME = "ESP32-S3"
-
     IMAGE_CHIP_ID = 9
+
+    USB_OTG_SUPPORTED = True
+    USB_SERIAL_JTAG_SUPPORTED = True
+    WATCHDOG_RESET_SUPPORTED = True
+    SECURITY_INFO_SUPPORTED = True
+    CUSTOM_SPI_FLASH_PINS_SUPPORTED = True
+    FLASH_32BIT_ADDR_SUPPORTED = True
+    USES_MAGIC_VALUE = False
 
     IROM_MAP_START = 0x42000000
     IROM_MAP_END = 0x44000000
@@ -33,8 +40,6 @@ class ESP32S3ROM(ESP32ROM):
     SPI_W0_OFFS = 0x58
 
     SPI_ADDR_REG_MSB = False
-
-    USES_MAGIC_VALUE = False
 
     BOOTLOADER_FLASH_OFFSET = 0x0
 
@@ -87,8 +92,6 @@ class ESP32S3ROM(ESP32ROM):
     RTC_CNTL_WDTCONFIG1_REG = RTCCNTL_BASE_REG + 0x009C
     RTC_CNTL_WDTWPROTECT_REG = RTCCNTL_BASE_REG + 0x00B0
     RTC_CNTL_WDT_WKEY = 0x50D83AA1
-
-    USB_RAM_BLOCK = 0x800  # Max block size USB-OTG is used
 
     GPIO_STRAP_REG = 0x60004038
     GPIO_STRAP_SPI_BOOT_MASK = 1 << 3  # Not download mode
@@ -326,8 +329,7 @@ class ESP32S3ROM(ESP32ROM):
             self.write_reg(self.RTC_CNTL_SWD_WPROTECT_REG, 0)
 
     def _post_connect(self):
-        if self.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
+        super()._post_connect()
         if not self.secure_download_mode and not self.sync_stub_detected:
             # Don't run if stub is reused
             self.disable_watchdogs()
@@ -385,12 +387,6 @@ class ESP32S3ROM(ESP32ROM):
 
 class ESP32S3StubLoader(StubMixin, ESP32S3ROM):
     """Stub loader for ESP32-S3, runs on top of ROM."""
-
-    def __init__(self, rom_loader):
-        super().__init__(rom_loader)  # Initialize the mixin
-        if rom_loader.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
-            self.FLASH_WRITE_SIZE = self.USB_RAM_BLOCK
 
 
 ESP32S3ROM.STUB_CLASS = ESP32S3StubLoader

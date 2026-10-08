@@ -6,7 +6,6 @@
 import struct
 
 from ..loader import ESPLoader, StubMixin
-from ..logger import log
 from ..util import FatalError, NotImplementedInROMError
 from .esp32c5 import ESP32C5ROM
 
@@ -14,6 +13,14 @@ from .esp32c5 import ESP32C5ROM
 class ESP32S31ROM(ESP32C5ROM):
     CHIP_NAME = "ESP32-S31"
     IMAGE_CHIP_ID = 32
+
+    USB_OTG_SUPPORTED = True
+    USB_SERIAL_JTAG_SUPPORTED = True
+    WATCHDOG_RESET_SUPPORTED = True
+    SECURITY_INFO_SUPPORTED = True
+    CUSTOM_SPI_FLASH_PINS_SUPPORTED = False
+    FLASH_32BIT_ADDR_SUPPORTED = True
+    USES_MAGIC_VALUE = False
 
     IROM_MAP_START = 0x40000000
     IROM_MAP_END = 0x54000000
@@ -43,6 +50,8 @@ class ESP32S31ROM(ESP32C5ROM):
     RTC_CNTL_WDTCONFIG1_REG = DR_REG_LP_WDT_BASE + 0x4
     RTC_CNTL_WDTWPROTECT_REG = DR_REG_LP_WDT_BASE + 0x18
     RTC_CNTL_WDT_WKEY = 0x50D83AA1
+    RTC_CNTL_SWD_WPROTECT_REG = DR_REG_LP_WDT_BASE + 0x20  # RTC_WDT_SWD_WPROTECT_REG
+    RTC_CNTL_SWD_CONF_REG = DR_REG_LP_WDT_BASE + 0x1C  # RTC_WDT_SWD_CONFIG_REG
 
     EFUSE_RD_REG_BASE = EFUSE_BASE + 0x030  # EFUSE_RD_REPEAT_DATA0_REG
 
@@ -91,8 +100,6 @@ class ESP32S31ROM(ESP32C5ROM):
     ]
 
     UF2_FAMILY_ID = 0x3101F7C1
-
-    USB_RAM_BLOCK = 0x800  # Max block size USB-OTG is used
 
     EFUSE_MAX_KEY = 4
     KEY_PURPOSES: dict[int, str] = {
@@ -220,19 +227,6 @@ class ESP32S31ROM(ESP32C5ROM):
     def change_baud(self, baud):
         ESPLoader.change_baud(self, baud)
 
-    def _post_connect(self):
-        if self.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
-
-    def check_spi_connection(self, spi_connection):
-        if not set(spi_connection).issubset(set(range(0, 61))):
-            raise FatalError("SPI Pin numbers must be in the range 0-60.")
-        if any([v for v in spi_connection if v in [33, 34]]):
-            log.warn(
-                "GPIO pins 33 and 34 are used by USB-Serial/JTAG, "
-                "consider using other pins for SPI flash connection."
-            )
-
     def hard_reset(self):
         (
             self.watchdog_reset()
@@ -243,12 +237,6 @@ class ESP32S31ROM(ESP32C5ROM):
 
 class ESP32S31StubLoader(StubMixin, ESP32S31ROM):
     """Stub loader for ESP32-S31, runs on top of ROM."""
-
-    def __init__(self, rom_loader):
-        super().__init__(rom_loader)  # Initialize the mixin
-        if rom_loader.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
-            self.FLASH_WRITE_SIZE = self.USB_RAM_BLOCK
 
 
 ESP32S31ROM.STUB_CLASS = ESP32S31StubLoader

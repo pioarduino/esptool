@@ -79,7 +79,6 @@
    PSRAM_VENDOR (BLOCK1)                              Psram vendor                                       = 0 R/W (0b00)
    BLOCK_USR_DATA (BLOCK3)                            User data
       = 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 R/W
-   BLOCK_SYS_DATA2 (BLOCK9)                           System data part 2 (reserved)                      = 0 R/W (0x00000000)
 
    Flash fuses:
    FLASH_TYPE (BLOCK0)                                flash type: 0: nor flash; 1: nand flash            = False R/W (0b0)

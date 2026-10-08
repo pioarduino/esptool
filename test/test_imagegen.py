@@ -8,11 +8,15 @@ import subprocess
 import sys
 
 import pytest
-from conftest import need_to_install_package_err
+from conftest import (
+    ELF2IMAGE_FIXTURES_DIR,
+    need_to_install_package_err,
+)
 from elf_builder import build_elf
 from elftools.elf.elffile import ELFFile
 
-TEST_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "elf2image")
+# Committed ELF fixtures under test/elf2image/ (real IDF/SDK builds).
+TEST_DIR = str(ELF2IMAGE_FIXTURES_DIR)
 
 try:
     import esptool

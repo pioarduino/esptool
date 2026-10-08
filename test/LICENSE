@@ -1,0 +1,56 @@
+Copyright (c) Espressif Systems (Shanghai) CO LTD
+
+Unless otherwise noted below, files under this directory are licensed under
+the GNU General Public License, version 2 or later — the same license as the
+parent esptool project. See the LICENSE file in the repository root.
+
+----------------------------------------------------------------------------
+
+CC0 1.0 Universal
+
+The following source directories are dedicated to the public domain under
+CC0 1.0 Universal:
+
+  elf2image/esp32c6-appdesc/
+  elf2image/esp32-too-many-sections/
+
+SPDX-License-Identifier: CC0-1.0
+
+Full legal text: LICENSE-CC0-1.0
+
+----------------------------------------------------------------------------
+
+ESP-IDF and other upstream binaries
+
+Firmware, bootloader, and related binary/ELF fixtures under images/,
+secure_images/, and elf2image/ that are build products of ESP-IDF, the
+ESP8266 SDK, Zephyr, or other upstream projects remain under the licenses of
+those projects. They are not licensed under CC0-1.0 by this notice.
+
+ESP-IDF source is primarily Apache License 2.0. Built images may also
+include third-party components (for example newlib) under additional
+licenses; see the ESP-IDF COPYRIGHT and LICENSE files.
+
+Third-party or incomplete-source fixtures include:
+
+  elf2image/esp8266-nonossdk*.elf
+  elf2image/esp8266-openrtos-blink-v2.elf
+  elf2image/esp32-zephyr.elf
+  images/esp8266_deepsleep.bin
+  images/not_4_byte_aligned.bin
+  images/efuse/*
+
+For `images/efuse/`, `esp_efuse_custom_table.csv` is the editable form of the
+custom eFuse table; the key blobs are opaque test material.
+
+ESP-IDF / SDK regression goldens without in-tree sources (for example
+`images/bootloader_*.bin`, `images/esp_idf_blink_esp32s2.bin`,
+`elf2image/esp32-app-template.elf`, `elf2image/esp32-bootloader.elf`, and
+`secure_images/` bases) are covered by the upstream-license paragraph above,
+not this list. Header stubs (`images/esp32c3_header_min_rev.bin`,
+`images/esp32s3_header.bin`) and `images/partitions_singleapp.bin` have
+rebuild notes in `images/README.md`. Authored sources listed under CC0 above
+cover the matching `esp32c6-appdesc` / `esp32-too-many-sections` build
+products. The `images/ram_helloworld/` images are not committed; they are
+assembled at test time by `ram_helloworld_builder.py`, which is
+GPL-2.0-or-later like the rest of the suite.

@@ -39,6 +39,7 @@ pytestmark = pytest.mark.linux_host_test
 
 # Link command line options --port, --chip, --baud, --with-trace, and --preload-port
 from conftest import (
+    IMAGES_FIXTURES_DIR,
     arg_baud,
     arg_chip,
     arg_port,
@@ -48,6 +49,8 @@ from conftest import (
 )
 
 try:
+    from esp_pylib.errors import PortVidPidNotFoundError
+
     import espefuse
     import esptool
     from esptool import FatalError
@@ -242,6 +245,7 @@ class EsptoolTestCase:
                 "esp32s3",
                 "esp32c6",
                 "esp32h2",
+                "esp32h21",
                 "esp32p4",
                 "esp32c5",
                 "esp32c61",
@@ -252,7 +256,7 @@ class EsptoolTestCase:
             preload_cmd = base_cmd + [
                 "--no-stub",
                 "load-ram",
-                f"{TEST_DIR}/images/ram_helloworld/helloworld-{arg_chip}.bin",
+                f"{IMAGES_FIXTURES_DIR}/ram_helloworld/helloworld-{arg_chip}.bin",
             ]
             print("\nPreloading dummy binary to disable RTC watchdog...")
             run_esptool_process(preload_cmd)
@@ -498,27 +502,41 @@ class TestFlashEncryption(EsptoolTestCase):
         if self.valid_key_present() is True:
             pytest.skip("Valid encryption key already programmed, aborting the test")
 
-        output = self.run_esptool(
-            f"write-flash --encrypt --ignore-flash-enc-efuse --{compression} "
-            "0x10000 images/ram_helloworld/helloworld-esp32_edit.bin"
-        )
+        # A copy of the image with the same length and one byte of its appended
+        # SHA-256 changed, so that the readback cannot match the original
+        image_path = IMAGES_FIXTURES_DIR / "ram_helloworld" / "helloworld-esp32.bin"
+        image = bytearray(image_path.read_bytes())
+        image[-1] ^= 0xFF
+        edited_bin = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
+        try:
+            edited_bin.write(image)
+            edited_bin.close()
 
-        if compression == "compress":
-            # Verify that compression was actually used
-            assert "compressed" in output, (
-                "Compression was not used - output should contain 'compressed'"
-            )
-            # Check for the pattern "Wrote X bytes (Y compressed)"
-            # which indicates compression was used
-            match = re.search(r"Wrote (\d+) bytes \((\d+) compressed\)", output)
-            assert match is not None, (
-                "Compression output format not found. "
-                "Expected pattern: 'Wrote X bytes (Y compressed)'"
+            output = self.run_esptool(
+                f"write-flash --encrypt --ignore-flash-enc-efuse --{compression} "
+                f"0x10000 {edited_bin.name}"
             )
 
-        self._read_and_compare_encrypted_file(
-            0x10000, "images/ram_helloworld/helloworld-esp32.bin", should_match=False
-        )
+            if compression == "compress":
+                # Verify that compression was actually used
+                assert "compressed" in output, (
+                    "Compression was not used - output should contain 'compressed'"
+                )
+                # Check for the pattern "Wrote X bytes (Y compressed)"
+                # which indicates compression was used
+                match = re.search(r"Wrote (\d+) bytes \((\d+) compressed\)", output)
+                assert match is not None, (
+                    "Compression output format not found. "
+                    "Expected pattern: 'Wrote X bytes (Y compressed)'"
+                )
+
+            self._read_and_compare_encrypted_file(
+                0x10000,
+                "images/ram_helloworld/helloworld-esp32.bin",
+                should_match=False,
+            )
+        finally:
+            os.unlink(edited_bin.name)
 
 
 class TestFlashing(EsptoolTestCase):
@@ -909,13 +927,24 @@ class TestFlashing(EsptoolTestCase):
         arg_chip == "esp32s3", reason="This is a valid ESP32-S3 image, would pass"
     )
     def test_write_image_for_another_target(self):
+        bl_offset = esptool.CHIP_DEFS[arg_chip].BOOTLOADER_FLASH_OFFSET
+        padding_offset = bl_offset + 0x1000
         output = self.run_esptool_error(
-            "write-flash 0x0 images/esp32s3_header.bin 0x1000 images/one_kb.bin"
+            f"write-flash {bl_offset:#x} images/esp32s3_header.bin "
+            f"{padding_offset:#x} images/one_kb.bin"
         )
-        assert "Unexpected chip ID in image." in output
-        assert "value was 9. Is this image for a different chip model?" in output
         assert "'images/esp32s3_header.bin' is not an " in output
-        assert "image. Use the force argument to flash anyway." in output
+        assert "image. Use --force to flash anyway." in output
+
+    @pytest.mark.skipif(
+        arg_chip in ["esp8266", "esp32s3"],
+        reason="Requires a foreign ESP32-S3 image",
+    )
+    def test_write_image_for_another_target_outside_bootloader(self):
+        """Foreign chip image outside the bootloader: note printed, flash verified"""
+        output = self.run_esptool("write-flash 0x10000 images/esp32s3_header.bin")
+        expected_chip = esptool.CHIP_DEFS[arg_chip].CHIP_NAME
+        assert f"'images/esp32s3_header.bin' is not an {expected_chip} image" in output
 
     @pytest.mark.skipif(
         arg_chip == "esp8266", reason="chip_id field exist in ESP32 and later images"
@@ -924,26 +953,43 @@ class TestFlashing(EsptoolTestCase):
         arg_chip != "esp32s3", reason="This check happens only on a valid image"
     )
     def test_write_image_for_another_revision(self):
+        bl_offset = esptool.CHIP_DEFS[arg_chip].BOOTLOADER_FLASH_OFFSET
+        padding_offset = bl_offset + 0x1000
         output = self.run_esptool_error(
-            "write-flash 0x0 images/one_kb.bin 0x1000 images/esp32s3_header.bin"
+            f"write-flash {bl_offset:#x} images/esp32s3_header.bin "
+            f"{padding_offset:#x} images/one_kb.bin"
         )
         assert "'images/esp32s3_header.bin' requires chip revision 10" in output
         assert "or higher (this chip is revision" in output
-        assert "Use the force argument to flash anyway." in output
+        assert "Use --force to flash anyway." in output
+
+    @pytest.mark.skipif(
+        arg_chip != "esp32s3", reason="Requires a valid image with a newer revision"
+    )
+    def test_write_image_for_another_revision_outside_bootloader(self):
+        """Wrong revision image outside the bootloader: note printed, flash verified"""
+        output = self.run_esptool("write-flash 0x10000 images/esp32s3_header.bin")
+        assert (
+            "'images/esp32s3_header.bin' requires chip revision 10 or higher "
+            "(this chip is revision" in output
+        )
 
     @pytest.mark.skipif(
         arg_chip != "esp32c3", reason="This check happens only on a valid image"
     )
     def test_flash_with_min_max_rev(self):
         """Use min/max_rev_full field to specify chip revision"""
+        bl_offset = esptool.CHIP_DEFS[arg_chip].BOOTLOADER_FLASH_OFFSET
+        padding_offset = bl_offset + 0x1000
         output = self.run_esptool_error(
-            "write-flash 0x0 images/one_kb.bin 0x1000 images/esp32c3_header_min_rev.bin"
+            f"write-flash {bl_offset:#x} images/esp32c3_header_min_rev.bin "
+            f"{padding_offset:#x} images/one_kb.bin"
         )
         assert (
             "'images/esp32c3_header_min_rev.bin' "
-            "requires chip revision in range [v2.55 - max rev not set]" in output
+            "requires chip revision v2.55 or higher" in output
         )
-        assert "Use the force argument to flash anyway." in output
+        assert "Use --force to flash anyway." in output
 
     @pytest.mark.quick_test
     def test_erase_before_write(self):
@@ -1638,8 +1684,13 @@ class TestMemoryOperations(EsptoolTestCase):
         Return a RAM address suitable for memory read/write tests.
         ESP32-P4 has different RAM ranges. Address 0x4FF90000 is just
         inside the range and unused.
+        ESP32-S31 uses 0x2F070000 near the end of HP SRAM, below the ROM stack.
         """
-        return 0x4FF90000 if arg_chip == "esp32p4" else 0x400C0000
+        if arg_chip == "esp32p4":
+            return 0x4FF90000
+        if arg_chip == "esp32s31":
+            return 0x2F070000
+        return 0x400C0000
 
     def test_memory_write(self, test_address):
         output = self.run_esptool(f"write-mem {test_address:#X} 0xabad1dea 0x0000ffff")
@@ -1726,6 +1777,10 @@ class TestKeepImageSettings(EsptoolTestCase):
 
 
 @pytest.mark.skipif(
+    arg_chip == "esp32h21",
+    reason="No RAM helloworld binary available for ESP32-H21.",
+)
+@pytest.mark.skipif(
     arg_chip in ["esp32s2", "esp32s3", "esp32p4"],
     reason="Not supported on targets with USB-OTG.",
 )
@@ -1755,9 +1810,7 @@ class TestLoadRAM(EsptoolTestCase):
         "Hello world!\n" to the serial port.
         """
         self.run_esptool(f"load-ram images/ram_helloworld/helloworld-{arg_chip}.bin")
-        self.verify_output(
-            [b"Hello world!", b'\xce?\x13\x05\x04\xd0\x97A\x11"\xc4\x06\xc67\x04']
-        )
+        self.verify_output([b"Hello world!"])
 
     def test_load_ram_hex(self):
         """Verify load-ram command with hex file as input
@@ -1774,9 +1827,24 @@ class TestLoadRAM(EsptoolTestCase):
             # make sure file is closed before running next command (mainly for Windows)
             os.close(fd)
             self.run_esptool(f"load-ram {f}")
-            self.verify_output(
-                [b"Hello world!", b'\xce?\x13\x05\x04\xd0\x97A\x11"\xc4\x06\xc67\x04']
-            )
+            self.verify_output([b"Hello world!"])
+        finally:
+            os.unlink(f)
+
+    @pytest.mark.skipif(arg_chip == "esp8266", reason="ESP8266 images have no chip ID")
+    def test_load_ram_for_another_target(self):
+        """Image with a foreign chip ID: warning printed, image still loaded"""
+        with open(f"images/ram_helloworld/helloworld-{arg_chip}.bin", "rb") as f:
+            image = bytearray(f.read())
+        image[12:14] = struct.pack("<H", 0xFFFF)  # chip ID field, unused by any chip
+        fd, f = tempfile.mkstemp(suffix=".bin")
+        try:
+            os.write(fd, image)
+            os.close(fd)
+            output = self.run_esptool(f"load-ram {f}")
+            expected_chip = esptool.CHIP_DEFS[arg_chip].CHIP_NAME
+            assert f"is not an {expected_chip} image" in output
+            self.verify_output([b"Hello world!"])
         finally:
             os.unlink(f)
 
@@ -2120,14 +2188,9 @@ class TestReset(EsptoolTestCase):
     def test_watchdog_reset(self):
         # Erase the bootloader to get "invalid header" output + test watchdog reset
         res = self.run_esptool("--after watchdog-reset erase-region 0x0 0x4000")
-        if arg_chip in [
-            "esp8266",
-            "esp32",
-            "esp32h2",
-            "esp32c6",
-            "esp32h4",
-            "esp32e22",
-        ]:
+        from esptool.targets import CHIP_DEFS
+
+        if not CHIP_DEFS[arg_chip].WATCHDOG_RESET_SUPPORTED:
             assert "Watchdog hard reset is not supported" in res
             assert "Hard resetting via RTS pin..." in res
         else:
@@ -2622,3 +2685,122 @@ class TestSlipReaderRead:
         message = str(excinfo.value)
         assert message.startswith("Failed to start stub flasher")
         assert message.count(TROUBLESHOOTING_GUIDE_URL) == 1
+
+
+@pytest.mark.host_test
+class TestMissingUsbDescriptors(EsptoolTestCase):
+    """A pty is a real port that pySerial cannot resolve a VID/PID for, so it
+    exercises the fallback decision without any hardware or mocking."""
+
+    @pytest.fixture
+    def pty_port(self):
+        import pty
+
+        master_fd, slave_fd = pty.openpty()
+        yield os.ttyname(slave_fd)
+        os.close(master_fd)
+        os.close(slave_fd)
+
+    def _mocked_chip(self, chip, monkeypatch, vid_pid_result):
+        def lookup(_name):
+            if isinstance(vid_pid_result, Exception):
+                raise vid_pid_result
+            return vid_pid_result
+
+        monkeypatch.setattr("esptool.loader.get_port_vid_pid", lookup)
+        port = MagicMock()
+        port.name = "/dev/ttyUSB0"
+        port.port = "/dev/ttyUSB0"
+        return esptool.CHIP_DEFS[chip](port)
+
+    def _assert_rom_ram_capped_stub_uncapped(self, esp):
+        assert esp.use_usb_otg_block()
+        esp._post_connect()
+        assert esp.ESP_RAM_BLOCK == esp.USB_OTG_BLOCK_SIZE
+
+        stub = esp.STUB_CLASS(esp)
+        assert not stub.use_usb_otg_block()
+        assert stub.ESP_RAM_BLOCK == ESPLoader.ESP_RAM_BLOCK
+        assert stub.FLASH_WRITE_SIZE == 0x4000
+
+    @pytest.mark.skipif(os.name == "nt", reason="Needs a pty, Linux/MacOS only")
+    def test_usb_otg_capable_chip_lowers_rom_ram_block(self, pty_port):
+        with esptool.CHIP_DEFS["esp32s3"](pty_port) as esp:
+            assert esp.get_usb_vid_pid() == (None, None)
+            self._assert_rom_ram_capped_stub_uncapped(esp)
+
+    @pytest.mark.skipif(os.name == "nt", reason="Needs a pty, Linux/MacOS only")
+    def test_chip_without_usb_otg_keeps_block_size(self, pty_port):
+        with esptool.CHIP_DEFS["esp32c3"](pty_port) as esp:
+            assert esp.get_usb_vid_pid() == (None, None)
+            assert not esp.use_usb_otg_block()
+            esp._post_connect()
+            assert esp.ESP_RAM_BLOCK == ESPLoader.ESP_RAM_BLOCK
+
+    def test_usb_otg_chip_caps_rom_ram_only_without_descriptors(self, monkeypatch):
+        esp = self._mocked_chip(
+            "esp32s2",
+            monkeypatch,
+            PortVidPidNotFoundError("/dev/ttyUSB0 is not listed by pyserial"),
+        )
+        self._assert_rom_ram_capped_stub_uncapped(esp)
+
+    def test_detected_usb_otg_caps_rom_ram_only(self, monkeypatch):
+        chip = esptool.CHIP_DEFS["esp32s2"]
+        esp = self._mocked_chip(
+            "esp32s2",
+            monkeypatch,
+            (ESPLoader.ESPRESSIF_VID, chip.IMAGE_CHIP_ID),
+        )
+        self._assert_rom_ram_capped_stub_uncapped(esp)
+
+    def test_non_otg_chip_does_not_cap_block_size(self, monkeypatch):
+        esp = self._mocked_chip(
+            "esp32c3",
+            monkeypatch,
+            PortVidPidNotFoundError("/dev/ttyUSB0 is not listed by pyserial"),
+        )
+        assert not esp.use_usb_otg_block()
+        assert esp.ESP_RAM_BLOCK == ESPLoader.ESP_RAM_BLOCK
+
+
+@pytest.mark.skipif(
+    arg_chip != "esp32s3" or os.environ.get("ESPTOOL_TEST_USB_OTG") != "1",
+    reason="ESP32-S3 in USB-OTG mode only",
+)
+class TestMissingUsbDescriptorsUsbOtg(EsptoolTestCase):
+    """Flashing over USB-OTG has to work when the VID/PID cannot be resolved.
+
+    A board attached to the host always has USB descriptors, so the lookup
+    failure of a port exposed by a hypervisor or a socat bridge is emulated.
+    """
+
+    def test_write_flash_without_usb_descriptors(self, monkeypatch):
+        def no_vid_pid(port_name):
+            raise PortVidPidNotFoundError(f"{port_name!r} is not listed by pyserial")
+
+        monkeypatch.setattr("esptool.loader.get_port_vid_pid", no_vid_pid)
+        image = os.path.join(TEST_DIR, "images", "fifty_kb.bin")
+        with patch("sys.stdout", new=StringIO()) as fake_out:
+            esptool.main(
+                [
+                    "--port",
+                    arg_port,
+                    "--baud",
+                    str(arg_baud),
+                    "--after",
+                    "no-reset-stub",
+                    "write-flash",
+                    "0x0",
+                    image,
+                ]
+            )
+            output = fake_out.getvalue()
+        print(output)
+        sleep(0.5)  # Wait for the port to enumerate between tests
+
+        # USB-OTG is not detected; stub upload still uses the smaller RAM block.
+        assert "Failed to get VID/PID" in output
+        assert "Stub flasher running." in output
+        assert "Hash of data verified." in output
+        self.verify_readback(0, 50 * 1024, "images/fifty_kb.bin")

@@ -133,7 +133,7 @@ class EfuseDefineFields(EfuseFieldsBase):
         self.KEYBLOCKS = []
 
         # if BLK_VERSION_MINOR is 1, these efuse fields are in BLOCK2
-        self.BLOCK2_CALIBRATION_EFUSES = []
+        self.CALIBRATION_EFUSES = []
 
         self.CALC = []
 
@@ -164,7 +164,7 @@ class EfuseDefineFields(EfuseFieldsBase):
                 self.ALL_EFUSES[i] = None
 
             elif efuse.category == "calibration":
-                self.BLOCK2_CALIBRATION_EFUSES.append(efuse)
+                self.CALIBRATION_EFUSES.append(efuse)
                 self.ALL_EFUSES[i] = None
 
         self.CALC.append(

@@ -15,7 +15,7 @@ import tempfile
 import zlib
 
 import pytest
-from conftest import need_to_install_package_err
+from conftest import SECURE_FIXTURES_DIR, need_to_install_package_err
 
 try:
     import espsecure
@@ -24,6 +24,7 @@ except ImportError:
     need_to_install_package_err()
 
 TEST_DIR = os.path.abspath(os.path.dirname(__file__))
+SECURE_IMAGES_DIR = str(SECURE_FIXTURES_DIR)
 
 
 @pytest.mark.host_test
@@ -59,7 +60,7 @@ class EspSecureTestCase:
             f.close()
 
     def _get_imagepath(self, image_file):
-        return os.path.join(TEST_DIR, "secure_images", image_file)
+        return os.path.join(SECURE_IMAGES_DIR, image_file)
 
     def _open(self, image_file):
         f = open(self._get_imagepath(image_file), "rb")
@@ -339,7 +340,7 @@ class TestSigning(EspSecureTestCase):
 
     @pytest.mark.parametrize("scheme", ["rsa", "ecdsa192", "ecdsa256", "ecdsa384"])
     def test_sign_v2_multiple_keys_cli(self, scheme):
-        keydir = os.path.join(TEST_DIR, "secure_images")
+        keydir = SECURE_IMAGES_DIR
         with tempfile.NamedTemporaryFile(delete=False) as output_file:
             keyfiles = [
                 os.path.join(keydir, f"{scheme}_secure_boot_signing_key.pem"),

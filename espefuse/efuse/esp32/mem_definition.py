@@ -93,6 +93,16 @@ class EfuseDefineBlocks(EfuseBlocksBase):
                 list_of_names.append(blk.name)
         return list_of_names
 
+    def get_blocks_for_keys(self):
+        return [
+            "BLOCK1",
+            "flash_encryption",
+            "BLOCK2",
+            "secure_boot_v1",
+            "secure_boot_v2",
+            "BLOCK3",
+        ]
+
 
 class EfuseDefineFields(EfuseFieldsBase):
     def __init__(self, extend_efuse_table) -> None:

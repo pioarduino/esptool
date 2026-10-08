@@ -17,6 +17,14 @@ class ESP32C5ROM(ESP32C6ROM):
     CHIP_NAME = "ESP32-C5"
     IMAGE_CHIP_ID = 23
 
+    USB_OTG_SUPPORTED = False
+    USB_SERIAL_JTAG_SUPPORTED = True
+    WATCHDOG_RESET_SUPPORTED = True
+    SECURITY_INFO_SUPPORTED = True
+    CUSTOM_SPI_FLASH_PINS_SUPPORTED = False
+    FLASH_32BIT_ADDR_SUPPORTED = True
+    USES_MAGIC_VALUE = False
+
     BOOTLOADER_FLASH_OFFSET = 0x2000
 
     EFUSE_BASE = 0x600B4800
@@ -112,22 +120,73 @@ class ESP32C5ROM(ESP32C6ROM):
         num_word = 2
         return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 4) & 0x03
 
+    def get_flash_cap(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 13) & 0x07
+
+    def get_flash_vendor(self):
+        num_word = 2
+        vendor_id = (
+            self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 16
+        ) & 0x07
+        return {1: "XMC"}.get(vendor_id, "")
+
+    def get_psram_cap(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 19) & 0x07
+
+    def get_psram_vendor(self):
+        num_word = 2
+        vendor_id = (
+            self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 22
+        ) & 0x03
+        return {1: "AP_3v3"}.get(vendor_id, "")
+
+    def get_temp(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 24) & 0x03
+
     def get_chip_description(self):
-        chip_name = {
-            0: "ESP32-C5",
-        }.get(self.get_pkg_version(), "Unknown ESP32-C5")
+        # ESP32-C5 + temperature (N/H) + in-package flash + PSRAM
+        chip_name = "ESP32-C5"
+        chip_name += {0: "N", 1: "H"}.get(self.get_temp(), "?")
+        chip_name += {0: "", 1: "F4"}.get(self.get_flash_cap(), "F?")
+        chip_name += {0: "", 1: "R4", 2: "R8"}.get(self.get_psram_cap(), "R?")
+
+        if "?" in chip_name:
+            chip_name = "Unknown " + chip_name
+
         major_rev = self.get_major_chip_version()
         minor_rev = self.get_minor_chip_version()
         return f"{chip_name} (revision v{major_rev}.{minor_rev})"
 
     def get_chip_features(self):
-        return [
+        features = [
             "Wi-Fi 6 (dual-band)",
             "BT 5 (LE)",
             "IEEE802.15.4",
             "Single Core + LP Core",
             "240MHz",
         ]
+
+        flash_version = {
+            0: "No Embedded Flash",
+            1: "Embedded Flash 4MB",
+        }.get(self.get_flash_cap(), "Unknown Embedded Flash")
+        if self.get_flash_cap() == 1:
+            flash_version += f" ({self.get_flash_vendor()})"
+        features += [flash_version]
+
+        psram_version = {
+            0: "No Embedded PSRAM",
+            1: "Embedded PSRAM 4MB",
+            2: "Embedded PSRAM 8MB",
+        }.get(self.get_psram_cap(), "Unknown Embedded PSRAM")
+        if self.get_psram_cap() in (1, 2):
+            psram_version += f" ({self.get_psram_vendor()})"
+        features += [psram_version]
+
+        return features
 
     def get_crystal_freq(self):
         # The crystal detection algorithm of ESP32/ESP8266
@@ -143,12 +202,11 @@ class ESP32C5ROM(ESP32C6ROM):
         ESPLoader.hard_reset(self, self.uses_usb_jtag_serial())
 
     def change_baud(self, baud):
-        if self.secure_download_mode:  # ESPTOOL-1231
-            log.warn(
-                "Baud rate change is not supported in secure download mode. "
-                "Keeping 115200 baud."
-            )
-        elif not self.IS_STUB:
+        if self.secure_download_mode or self.IS_STUB:
+            # Registers can't be read in SDM, assume 48 MHz XTAL
+            # (the only one supported in mass production)
+            ESPLoader.change_baud(self, baud)
+        else:
             crystal_freq_rom_expect = self.get_crystal_freq_rom_expect()
             crystal_freq_detect = self.get_crystal_freq()
             log.print(
@@ -174,8 +232,6 @@ class ESP32C5ROM(ESP32C6ROM):
             self._set_port_baudrate(baud)
             time.sleep(0.05)  # get rid of garbage sent during baud rate change
             self.flush_input()
-        else:
-            ESPLoader.change_baud(self, baud)
 
     def get_key_block_purpose(self, key_block):
         if key_block < 0 or key_block > self.EFUSE_MAX_KEY:
@@ -212,15 +268,6 @@ class ESP32C5ROM(ESP32C6ROM):
             return True
 
         return self.uses_key_manager_for_flash_encryption()
-
-    def check_spi_connection(self, spi_connection):
-        if not set(spi_connection).issubset(set(range(0, 29))):
-            raise FatalError("SPI Pin numbers must be in the range 0-28.")
-        if any([v for v in spi_connection if v in [13, 14]]):
-            log.warn(
-                "GPIO pins 13 and 14 are used by USB-Serial/JTAG, "
-                "consider using other pins for SPI flash connection."
-            )
 
     def watchdog_reset(self):
         # Watchdog reset disabled in parent (ESP32-C6) ROM, re-enable it

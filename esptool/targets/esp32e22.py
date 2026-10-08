@@ -6,7 +6,6 @@
 import struct
 
 from ..loader import ESPLoader, StubMixin
-from ..logger import log
 from ..util import FatalError, NotSupportedError
 from .esp32 import ESP32ROM
 
@@ -14,6 +13,14 @@ from .esp32 import ESP32ROM
 class ESP32E22ROM(ESP32ROM):
     CHIP_NAME = "ESP32-E22"
     IMAGE_CHIP_ID = 31
+
+    USB_OTG_SUPPORTED = True
+    USB_SERIAL_JTAG_SUPPORTED = False
+    WATCHDOG_RESET_SUPPORTED = False
+    SECURITY_INFO_SUPPORTED = True
+    CUSTOM_SPI_FLASH_PINS_SUPPORTED = False
+    FLASH_32BIT_ADDR_SUPPORTED = False
+    USES_MAGIC_VALUE = False
 
     IROM_MAP_START = 0x3C000000
     IROM_MAP_END = 0x40000000
@@ -68,10 +75,6 @@ class ESP32E22ROM(ESP32ROM):
     PURPOSE_VAL_XTS_AES128_KEY = 4
 
     FLASH_ENCRYPTED_WRITE_ALIGN = 16
-
-    USES_MAGIC_VALUE = False
-
-    USB_RAM_BLOCK = 0x800  # Max block size USB-OTG is used
 
     GPIO_STRAP_REG = 0xC310D000
     GPIO_STRAP_SPI_BOOT_MASK = 1 << 3  # Not download mode
@@ -207,15 +210,6 @@ class ESP32E22ROM(ESP32ROM):
     def change_baud(self, baud):
         ESPLoader.change_baud(self, baud)
 
-    def check_spi_connection(self, spi_connection):  # TODO: Check pins
-        if not set(spi_connection).issubset(set(range(0, 53))):
-            raise FatalError("SPI Pin numbers must be in the range 0-52.")
-        if any([v for v in spi_connection if v in [18, 19]]):
-            log.warn(
-                "GPIO pins 18 and 19 are used by USB-OTG, "
-                "consider using other pins for SPI flash connection."
-            )
-
     # Watchdog reset is not supported on ESP32-E22
     def watchdog_reset(self):
         ESPLoader.watchdog_reset(self)
@@ -238,12 +232,6 @@ class ESP32E22ROM(ESP32ROM):
 
 class ESP32E22StubLoader(StubMixin, ESP32E22ROM):
     """Stub loader for ESP32-E22, runs on top of ROM."""
-
-    def __init__(self, rom_loader):
-        super().__init__(rom_loader)  # Initialize the mixin
-        if rom_loader.uses_usb_otg():
-            self.ESP_RAM_BLOCK = self.USB_RAM_BLOCK
-            self.FLASH_WRITE_SIZE = self.USB_RAM_BLOCK
 
 
 ESP32E22ROM.STUB_CLASS = ESP32E22StubLoader

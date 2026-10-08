@@ -135,8 +135,8 @@ class EfuseDefineFields(EfuseFieldsBase):
 
         self.KEYBLOCKS = []
 
-        # if BLK_VERSION_MINOR is 1, these efuse fields are in BLOCK2
-        self.BLOCK2_CALIBRATION_EFUSES = []
+        # BLK_VERSION_MINOR 2 adds ADC calibration data to BLOCK9.
+        self.CALIBRATION_EFUSES = []
 
         self.CALC: list = []
 
@@ -157,7 +157,6 @@ class EfuseDefineFields(EfuseFieldsBase):
                 "BLOCK_KEY2",
                 "BLOCK_KEY3",
                 "BLOCK_KEY4",
-                "BLOCK_SYS_DATA2",
             ]:
                 if efuse.name == "BLOCK_USR_DATA":
                     efuse.bit_len = 256
@@ -166,7 +165,7 @@ class EfuseDefineFields(EfuseFieldsBase):
                 self.ALL_EFUSES[i] = None
 
             elif efuse.category == "calibration":
-                self.BLOCK2_CALIBRATION_EFUSES.append(efuse)
+                self.CALIBRATION_EFUSES.append(efuse)
                 self.ALL_EFUSES[i] = None
 
         for efuse in self.ALL_EFUSES:

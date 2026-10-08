@@ -131,7 +131,7 @@ class EfuseDefineFields(EfuseFieldsBase):
         # List of efuse fields from TRM the chapter eFuse Controller.
         self.EFUSES = []
         self.KEYBLOCKS = []
-        self.BLOCK2_CALIBRATION_EFUSES = []
+        self.CALIBRATION_EFUSES = []
         self.CALC = []
 
         dir_name = os.path.dirname(os.path.abspath(__file__))
@@ -161,7 +161,7 @@ class EfuseDefineFields(EfuseFieldsBase):
                 self.ALL_EFUSES[i] = None
 
             elif efuse.category == "calibration":
-                self.BLOCK2_CALIBRATION_EFUSES.append(efuse)
+                self.CALIBRATION_EFUSES.append(efuse)
                 self.ALL_EFUSES[i] = None
 
         self.CALC.append(

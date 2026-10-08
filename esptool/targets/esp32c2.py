@@ -8,13 +8,20 @@ import time
 
 from ..loader import ESPLoader, StubMixin
 from ..logger import log
-from ..util import FatalError
 from .esp32c3 import ESP32C3ROM
 
 
 class ESP32C2ROM(ESP32C3ROM):
     CHIP_NAME = "ESP32-C2"
     IMAGE_CHIP_ID = 12
+
+    USB_OTG_SUPPORTED = False
+    USB_SERIAL_JTAG_SUPPORTED = False
+    WATCHDOG_RESET_SUPPORTED = True
+    SECURITY_INFO_SUPPORTED = True
+    CUSTOM_SPI_FLASH_PINS_SUPPORTED = False
+    FLASH_32BIT_ADDR_SUPPORTED = False
+    USES_MAGIC_VALUE = False
 
     IROM_MAP_START = 0x42000000
     IROM_MAP_END = 0x42400000
@@ -174,10 +181,6 @@ class ESP32C2ROM(ESP32C3ROM):
             if self.read_reg(self.EFUSE_BLOCK_KEY0_REG + i * 4) != 0:
                 return True
         return False
-
-    def check_spi_connection(self, spi_connection):
-        if not set(spi_connection).issubset(set(range(0, 21))):
-            raise FatalError("SPI Pin numbers must be in the range 0-20.")
 
 
 class ESP32C2StubLoader(StubMixin, ESP32C2ROM):

@@ -1,14 +1,4 @@
-{IDF_TARGET_FLASH_FREQ_F:default="80", esp32c2="60", esp32h2="48", esp32h21="48", esp32h4="48"}
-
-{IDF_TARGET_FLASH_FREQ_0:default="40", esp32c2="30", esp32h2="24", esp32h21="24", esp32h4="24"}
-
-{IDF_TARGET_FLASH_FREQ_1:default="26", esp32c2="20", esp32h2="16", esp32h21="16", esp32h4="16"}
-
-{IDF_TARGET_FLASH_FREQ_2:default="20", esp32c2="15", esp32h2="12", esp32h21="12", esp32h4="12"}
-
 {IDF_TARGET_FLASH_SIZE_ENC_EXTRA:default="", esp32s2=", ``5`` = 32MB, ``6`` = 64MB, ``7`` = 128MB", esp32s3=", ``5`` = 32MB, ``6`` = 64MB, ``7`` = 128MB", esp32p4=", ``5`` = 32MB, ``6`` = 64MB", esp32c5=", ``5`` = 32MB", esp32c61=", ``5`` = 32MB", esp32h4=", ``5`` = 32MB", esp32s31=", ``5`` = 32MB, ``6`` = 64MB, ``7`` = 128MB"}
-
-{IDF_TARGET_BOOTLOADER_OFFSET:default="0x0", esp32="0x1000", esp32s2="0x1000", esp32p4="0x2000", esp32c5="0x2000", esp32s31="0x2000"}
 
 
 .. _image-format:
@@ -80,17 +70,7 @@ The image header is 8 bytes long:
         * - 3
           - High four bits - Flash size (``0`` = 1MB, ``1`` = 2MB, ``2`` = 4MB, ``3`` = 8MB, ``4`` = 16MB{IDF_TARGET_FLASH_SIZE_ENC_EXTRA})
 
-            .. only:: not (esp32c5 or esp32c61 or esp32c6 or esp32s31)
-
-                Low four bits - Flash frequency (``0`` = {IDF_TARGET_FLASH_FREQ_0}MHz, ``1`` = {IDF_TARGET_FLASH_FREQ_1}MHz, ``2`` = {IDF_TARGET_FLASH_FREQ_2}MHz, ``0xf`` = {IDF_TARGET_FLASH_FREQ_F}MHz)
-
-            .. only:: esp32c5 or esp32c61 or esp32s31
-
-                Low four bits - Flash frequency (``0xf`` = {IDF_TARGET_FLASH_FREQ_F}MHz, ``0`` = {IDF_TARGET_FLASH_FREQ_0}MHz, ``2`` = {IDF_TARGET_FLASH_FREQ_2}MHz)
-
-            .. only:: esp32c6
-
-                Low four bits - Flash frequency (``0`` = 80MHz or 40MHz, ``2`` = 20MHz)
+            Low four bits - Flash frequency ({IDF_TARGET_FLASH_FREQ_ENCODING})
         * - 4-7
           - Entry point address
 

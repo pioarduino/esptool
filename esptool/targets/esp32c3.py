@@ -16,6 +16,14 @@ class ESP32C3ROM(ESP32ROM):
     CHIP_NAME = "ESP32-C3"
     IMAGE_CHIP_ID = 5
 
+    USB_OTG_SUPPORTED = False
+    USB_SERIAL_JTAG_SUPPORTED = True
+    WATCHDOG_RESET_SUPPORTED = True
+    SECURITY_INFO_SUPPORTED = True
+    CUSTOM_SPI_FLASH_PINS_SUPPORTED = True
+    FLASH_32BIT_ADDR_SUPPORTED = False
+    USES_MAGIC_VALUE = False
+
     IROM_MAP_START = 0x42000000
     IROM_MAP_END = 0x42800000
     DROM_MAP_START = 0x3C000000
@@ -30,8 +38,6 @@ class ESP32C3ROM(ESP32ROM):
     SPI_W0_OFFS = 0x58
 
     SPI_ADDR_REG_MSB = False
-
-    USES_MAGIC_VALUE = False
 
     BOOTLOADER_FLASH_OFFSET = 0x0
 
@@ -238,6 +244,7 @@ class ESP32C3ROM(ESP32ROM):
             self.write_reg(self.RTC_CNTL_SWD_WPROTECT_REG, 0)
 
     def _post_connect(self):
+        super()._post_connect()
         if not self.secure_download_mode and not self.sync_stub_detected:
             # Don't run if stub is reused
             self.disable_watchdogs()
