@@ -9,9 +9,9 @@ import sys
 import time
 
 import reedsolo
-from bitstring import BitArray
 
 import esptool
+from espefuse.efuse.bitstring import BitArray
 from esptool.logger import log
 
 from .. import base_fields
@@ -90,7 +90,8 @@ class EspEfuses(base_fields.EspEfusesBase):
         if skip_connect:
             self.efuses += self._convert_efuse_defs(self.Fields.CALIBRATION_EFUSES)
         else:
-            if self.get_block_version() >= 2:
+            # Calibration data is present starting with BLK version 0.1.
+            if self.get_block_version() >= 1:
                 self.efuses += self._convert_efuse_defs(self.Fields.CALIBRATION_EFUSES)
             self.efuses += self._convert_efuse_defs(self.Fields.CALC)
 
